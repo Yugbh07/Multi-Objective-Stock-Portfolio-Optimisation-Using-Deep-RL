@@ -47,3 +47,6 @@ simulator/java/target/
 # OS
 .DS_Store
 Thumbs.db
+
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
