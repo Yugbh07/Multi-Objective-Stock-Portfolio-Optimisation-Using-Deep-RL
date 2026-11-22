@@ -64,6 +64,7 @@ use_regime = st.sidebar.checkbox("Enable Regime-Aware Policy", value=True)
 apply_risk_guardrails = st.sidebar.checkbox("Enforce 35% Asset Cap", value=True)
 
 # Current Market Regime
+latest_date_str = regimes_df.index[-1].strftime("%d %b %Y")
 latest_regime = str(regimes_df["regime"].iloc[-1])
 latest_vol = float(regimes_df["avg_volatility"].iloc[-1]) * 100
 
@@ -77,11 +78,11 @@ with col_m2:
         reg_badge = '<span class="badge-bear">🔴 BEARISH</span>'
     else:
         reg_badge = '<span class="badge-vol">🟡 HIGH VOLATILITY</span>'
-    st.markdown(f"**Current Regime**<br>{reg_badge}", unsafe_allow_html=True)
+    st.markdown(f"**Market Regime** ({latest_date_str})<br>{reg_badge}", unsafe_allow_html=True)
 with col_m3:
-    st.metric("Market Volatility", f"{latest_vol:.2f}%")
+    st.metric("Rolling Volatility", f"{latest_vol:.2f}%")
 with col_m4:
-    st.metric("Target Assets Selected", len(selected_assets))
+    st.metric("Target Assets Selected", f"{len(selected_assets)} / {len(all_tickers)}")
 
 st.markdown("---")
 
