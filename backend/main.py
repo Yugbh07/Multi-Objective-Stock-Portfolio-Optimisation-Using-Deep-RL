@@ -46,7 +46,18 @@ except Exception as e:
 
 @app.get("/health")
 def health():
-    return {"status": "ONLINE", "model_loaded": ppo_agent is not None, "assets": list(prices_df.columns)}
+    sim = VirtualTradingBridge()
+    return {
+        "status": "ONLINE",
+        "model_loaded": ppo_agent is not None,
+        "assets": list(prices_df.columns),
+        "java_simulator": sim.check_java_status()
+    }
+
+@app.get("/simulator/status")
+def get_simulator_status():
+    sim = VirtualTradingBridge()
+    return sim.check_java_status()
 
 @app.get("/assets")
 def get_assets():

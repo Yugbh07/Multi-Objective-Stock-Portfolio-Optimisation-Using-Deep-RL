@@ -180,20 +180,81 @@ with tab_explain:
 
 # Virtual Trading Simulator Tab
 with tab_simulator:
-    st.subheader("⚙️ Virtual Trading Execution Log (Java Simulator Engine)")
-    st.markdown("Simulating chronological order fills, slippage, and 10 bps transaction fees:")
+    st.subheader("⚙️ Virtual Trading Execution Log (Java 17 OOP Engine)")
+    st.markdown("High-performance microservice executing order matching, slippage, and 10 bps fee accounting:")
 
     sim_bridge = VirtualTradingBridge(initial_capital=capital)
+    java_status = sim_bridge.check_java_status()
+
+    if java_status.get("online"):
+        st.success(f"🟢 **Java 17 Trading Simulator Online (Port 8088)** | Native IPC Ping: **{java_status.get('ping_latency_ms')} ms** | Multi-Threaded Order Matching Active")
+    else:
+        st.info("ℹ️ **Python Native Engine Active** (To connect Java 17 Microservice: `cd simulator/java/src; javac -d . *.java; java simulator.SimulatorServer`)")
+
     latest_p = prices_df.iloc[-1].to_dict()
     sim_weights = dict(zip(alloc_df["Asset"], alloc_df["Weight (%)"] / 100.0))
     sim_out = sim_bridge.execute_rebalance(sim_weights, latest_p)
 
-    col_s1, col_s2, col_s3 = st.columns(3)
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
     col_s1.metric("Post-Trade Portfolio Value", f"INR {sim_out['portfolio_value']:,.2f}")
     col_s2.metric("Remaining Cash Reserve", f"INR {sim_out['cash_balance']:,.2f}")
     col_s3.metric("Transaction Fees Paid (10 bps)", f"INR {sim_out['fees_paid']:,.2f}")
+    ipc_time = sim_out.get('total_ipc_latency_ms', sim_out.get('latency_ms', 0))
+    col_s4.metric("IPC Execution Latency", f"{ipc_time:.2f} ms", f"{sim_out.get('engine_type', 'Simulator')}")
 
-    if sim_out["trades"]:
-        st.markdown("#### Executed Orders:")
+    col_btn1, col_btn2 = st.columns([1, 1])
+    with col_btn1:
+        if st.button("⚡ Execute Live Rebalance via Java Engine", use_container_width=True):
+            st.rerun()
+    with col_btn2:
+        if st.button("🔄 Reset Virtual Account to Initial Capital", use_container_width=True):
+            sim_bridge.reset_account(capital)
+            st.success("Virtual Account reset to initial capital!")
+            st.rerun()
+
+    if sim_out.get("trades"):
+        st.markdown("#### 📋 Real-Time Executed Order Audit Trail:")
         trades_df = pd.DataFrame(sim_out["trades"])
-        st.dataframe(trades_df, use_container_width=True)
+        st.dataframe(trades_df.style.format({
+            "shares": "{:,.4f}",
+            "price": "${:,.2f}",
+            "fee": "INR {:,.2f}"
+        }), use_container_width=True)
+
+    if sim_out.get("positions"):
+        st.markdown("#### 💼 Real-Time Portfolio Positions & Inventory:")
+        pos_list = []
+        for sym, sh in sim_out["positions"].items():
+            px = latest_p.get(sym, 0.0)
+            val = sh * px
+            pos_list.append({
+                "Asset": sym,
+                "Shares Owned": sh,
+                "Current Price": px,
+                "Position Value (USD)": val
+            })
+        if pos_list:
+            pos_df = pd.DataFrame(pos_list)
+            st.dataframe(pos_df.style.format({
+                "Shares Owned": "{:,.4f}",
+                "Current Price": "${:,.2f}",
+                "Position Value (USD)": "${:,.2f}"
+            }), use_container_width=True)
+
+    with st.expander("🏗️ View System Architecture & IPC Protocol"):
+        st.markdown("""
+        ```
+        ┌─────────────────────────┐          HTTP/REST IPC (Port 8088)          ┌─────────────────────────┐
+        │   Python Streamlit UI   │ ──────────────────────────────────────────> │   Java 17 Microservice  │
+        │   & PPO Agent Policy    │ <────────────────────────────────────────── │  (SimulatorServer.java) │
+        └─────────────────────────┘      JSON Payload (Weights & Prices)        └────────────┬────────────┘
+                                                                                             │
+                                                                                ┌────────────▼────────────┐
+                                                                                │  TradingEngine.java     │
+                                                                                │  - RiskManager.java     │
+                                                                                │  - Account.java         │
+                                                                                │  - Portfolio.java       │
+                                                                                │  - Trade & Order Log    │
+                                                                                └─────────────────────────┘
+        ```
+        """)

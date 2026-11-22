@@ -113,4 +113,10 @@ public class TradingEngine {
         result.put("trades", executedTrades);
         return result;
     }
+
+    public synchronized void reset(double initialCapital) {
+        this.account = new Account("ACC-001", initialCapital);
+        this.portfolio = new Portfolio("PORT-001");
+        this.tradeHistory = new ArrayList<>();
+    }
 }
