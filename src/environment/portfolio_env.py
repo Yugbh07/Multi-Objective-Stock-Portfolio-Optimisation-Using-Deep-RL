@@ -1,10 +1,13 @@
 """
 Gymnasium Portfolio Management Environment
 Custom reinforcement learning environment for dynamic asset allocation:
-- Observation Space: Recent asset returns, rolling volatilities, market regime one-hot,
-  current portfolio weights, and cash reserve fraction.
-- Action Space: Continuous action vector mapped to valid portfolio simplex via Softmax.
-- Multi-Objective Reward: Return - Risk Penalty (Portfolio Variance) - Turnover Cost.
+- Non-Anticipative MDP: Information at day t determines action w_t; return is earned over day t+1.
+  (Strictly eliminates lookahead bias).
+- Observation Space: Trailing returns, rolling volatilities, causal regime one-hot,
+  current drifted portfolio weights, and cash reserve fraction.
+- Action Space: Continuous action vector mapped to probability simplex via Softmax.
+- Multi-Objective Reward: Scalarized balance of net forward return, rolling covariance variance penalty,
+  and rebalancing turnover penalty.
 """
 
 import os
@@ -23,6 +26,7 @@ if PROJECT_ROOT not in sys.path:
 class PortfolioEnv(gym.Env):
     """
     Gymnasium-compliant multi-asset portfolio rebalancing environment.
+    Strictly causal and non-anticipative: action chosen at step t earns return at step t+1.
     """
     metadata = {"render_modes": ["human"]}
 
@@ -55,7 +59,7 @@ class PortfolioEnv(gym.Env):
         self.lookback_window = lookback_window
         self.include_regime = include_regime
 
-        # Returns matrix for all assets
+        # Returns matrix for all assets: row t is return from day t-1 to day t
         self.returns_matrix = self.prices_df.pct_change().fillna(0.0).values
         self.dates = list(self.prices_df.index)
         self.n_steps = len(self.dates)
@@ -107,25 +111,24 @@ class PortfolioEnv(gym.Env):
         """Constructs state observation vector for step self.current_step."""
         step = self.current_step
 
-        # 1. Asset returns
+        # 1. Historical asset returns up to step
         returns = self.features_df[self.return_cols].iloc[step].values.astype(np.float32)
 
-        # 2. Asset rolling volatilities
+        # 2. Asset rolling volatilities up to step
         vols = self.features_df[self.vol_cols].iloc[step].values.astype(np.float32)
 
         obs_components = [returns, vols]
 
-        # 3. Market regime one-hot (if enabled)
+        # 3. Market regime one-hot up to step (if enabled)
         if self.include_regime:
             regime_vec = self._get_regime_one_hot(step)
             obs_components.append(regime_vec)
 
-        # 4. Current portfolio weights and cash
+        # 4. Current drifted portfolio weights and cash
         obs_components.append(self.current_weights.astype(np.float32))
         obs_components.append(np.array([self.cash_ratio], dtype=np.float32))
 
         obs = np.concatenate(obs_components).astype(np.float32)
-        # Ensure finite observation
         obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
         return obs
 
@@ -152,56 +155,62 @@ class PortfolioEnv(gym.Env):
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
-        Executes one trading step:
-        1. Action mapped to target weights via Softmax.
-        2. Transaction costs and turnover computed.
-        3. Portfolio returns and variance computed.
-        4. Multi-objective reward formulated.
+        Executes strictly non-anticipative trading step:
+        1. Agent observes state at time t, outputs target weights w_t via Softmax.
+        2. Rebalancing turnover and transaction costs computed at close of day t.
+        3. Market advances to day t+1; portfolio earns forward return r_{t+1}.
+        4. Scalarized multi-objective reward evaluated on r_{t+1}, trailing covariance risk, and turnover.
+        5. Drifted weights computed at end of day t+1; next state S_{t+1} returned.
         """
-        # 1. Normalize action to valid weights
+        t = self.current_step
+        next_t = t + 1
+
+        # Check if episode can advance to next trading day
+        if next_t >= self.n_steps:
+            terminated = True
+            truncated = False
+            return self._get_observation(), 0.0, terminated, truncated, {"step": t, "portfolio_value": self.portfolio_value}
+
+        # 1. Action mapped to target weights on the simplex
         target_weights = self._softmax(action)
 
-        # 2. Current day asset returns
-        step_returns = self.returns_matrix[self.current_step]
-
-        # Drifted weights before rebalancing
-        grown_positions = self.current_weights * (1.0 + step_returns)
-        drifted_total = np.sum(grown_positions)
-        drifted_weights = grown_positions / drifted_total if drifted_total > 0 else self.current_weights
-
-        # 3. Turnover and transaction cost
-        turnover = float(np.sum(np.abs(target_weights - drifted_weights)))
+        # 2. Rebalancing turnover and transaction fee at day t
+        turnover = float(np.sum(np.abs(target_weights - self.current_weights)))
         cost = turnover * self.transaction_cost_rate
 
-        # 4. Portfolio return net of transaction cost
-        portfolio_gross_return = float(np.dot(target_weights, step_returns))
+        # 3. Next-day forward asset returns realized over day t -> t+1 (STRICTLY CAUSAL)
+        forward_returns = self.returns_matrix[next_t]
+
+        # 4. Portfolio return net of transaction friction
+        portfolio_gross_return = float(np.dot(target_weights, forward_returns))
         portfolio_net_return = portfolio_gross_return - cost
 
-        # Update portfolio value
+        # Update portfolio equity
         self.portfolio_value = self.portfolio_value * (1.0 + portfolio_net_return)
 
-        # 5. Risk (Portfolio Variance estimate)
-        # Use recent 20-day returns covariance
-        lookback_start = max(0, self.current_step - self.lookback_window)
-        recent_slice = self.returns_matrix[lookback_start:self.current_step + 1]
+        # 5. Risk estimate: Portfolio variance estimated using trailing historical covariance up to day t
+        lookback_start = max(0, t - self.lookback_window)
+        recent_slice = self.returns_matrix[lookback_start:t + 1]
         if len(recent_slice) > 2:
             cov = np.cov(recent_slice, rowvar=False)
             port_variance = float(np.dot(target_weights.T, np.dot(cov, target_weights)))
         else:
             port_variance = 0.0001
 
-        # 6. Multi-Objective Reward: Return - lambda_risk * Variance - lambda_cost * Turnover
+        # 6. Scalarized Multi-Objective Reward
         reward = float(
             (portfolio_net_return * 100.0)
             - (self.lambda_risk * port_variance * 1000.0)
             - (self.lambda_cost * turnover)
         )
 
-        # Update current weights for next step
-        self.current_weights = target_weights
+        # 7. Post-return asset price drift: update weights for end of day t+1
+        grown_positions = target_weights * (1.0 + forward_returns)
+        drifted_total = np.sum(grown_positions)
+        self.current_weights = grown_positions / drifted_total if drifted_total > 0 else target_weights
 
-        # Advance step
-        self.current_step += 1
+        # Advance time to t+1
+        self.current_step = next_t
         terminated = bool(self.current_step >= self.n_steps - 1)
         truncated = False
 
@@ -209,28 +218,12 @@ class PortfolioEnv(gym.Env):
 
         info = {
             "step": self.current_step,
-            "date": str(self.dates[min(self.current_step, self.n_steps - 1)].date()),
+            "date": str(self.dates[self.current_step].date()),
             "portfolio_value": self.portfolio_value,
-            "portfolio_return": portfolio_net_return,
+            "net_return": portfolio_net_return,
             "turnover": turnover,
-            "weights": target_weights.tolist()
+            "cost": cost,
+            "weights": target_weights
         }
 
         return obs, reward, terminated, truncated, info
-
-
-if __name__ == "__main__":
-    prices = pd.read_csv("data/processed/clean_prices.csv", index_col=0, parse_dates=True)
-    features = pd.read_csv("data/features/portfolio_features.csv", index_col=0, parse_dates=True)
-    regimes = pd.read_csv("data/features/market_regimes.csv", index_col=0, parse_dates=True)
-
-    env = PortfolioEnv(prices, features, regimes)
-    obs, info = env.reset()
-    print("Observation shape:", obs.shape)
-    print("Sample observation:", np.round(obs[:6], 4))
-
-    # Take a random step
-    action = env.action_space.sample()
-    next_obs, reward, term, trunc, info = env.step(action)
-    print(f"Step Reward: {reward:.4f} | Net Return: {info['portfolio_return']*100:.2f}% | Turnover: {info['turnover']:.4f}")
-    print("Assigned Weights:", np.round(info['weights'], 4))

@@ -19,9 +19,7 @@ School of Computer Science and Engineering (SCSE), IILM University, Greater Noid
 ## Abstract
 Quantitative portfolio optimization in non-stationary financial markets remains an open challenge due to rapid shifts between structural regimes (bullish trends, market corrections, and high-volatility turbulence). Classical Mean-Variance Optimization (MVO) relies on static distributional assumptions that fail during systemic disruptions, while naive deep reinforcement learning (DRL) policies frequently suffer from destabilizing turnover and acute policy collapse when encountering out-of-distribution market dynamics. In this paper, we propose an end-to-end multi-objective portfolio optimization framework that conditions a continuous Proximal Policy Optimization (PPO) agent on deterministic market regimes. 
 
-The environment is formulated as a Markov Decision Process (MDP) over a 19-dimensional continuous feature space encompassing rolling returns, volatility metrics, regime one-hot indicators, and current portfolio allocations, producing action vectors mapped to the probability simplex via a Softmax transformation. The optimization objective incorporates net portfolio return, a quadratic variance risk penalty, and an explicit turnover transaction cost penalty (10 basis points). We evaluate our model on a 10-year dataset (2016–2025, 2,514 trading days) comprising leading equity assets (AAPL, MSFT, GOOGL, AMZN, NVDA) with a rigorous out-of-sample test window spanning 2024–2025 (502 unseen trading days). 
-
-The proposed Regime-Aware PPO achieves a **cumulative return of 99.80%** (CAGR 41.64%), a **Sharpe ratio of 1.33**, and a **Calmar ratio of 1.28** net of transaction costs. In contrast, an unconditioned PPO ablation achieves only 54.54% return (Sharpe 0.89), demonstrating that regime-state conditioning yields a **45.26% absolute return enhancement** and superior risk-adjusted preservation across volatile economic cycles.
+The environment is formulated as a strictly causal, non-anticipative Markov Decision Process (MDP) over a 19-dimensional continuous feature space encompassing rolling returns, volatility metrics, causal expanding-window regime indicators, and current portfolio allocations, producing action vectors mapped to the probability simplex. The optimization objective incorporates forward net portfolio return, a rolling quadratic covariance risk penalty, and an explicit turnover transaction cost penalty (10 basis points). We evaluate our model on a 10-year dataset (2016–2025) comprising leading equity assets (AAPL, MSFT, GOOGL, AMZN, NVDA) with a strictly non-anticipative out-of-sample test window spanning 2024–2026 (726 unseen trading days). In out-of-sample testing net of realistic fees and institutional 35% single-asset constraints, the framework demonstrates how continuous reinforcement learning adapts to macro regime shifts while highlighting the real-world friction trade-offs against classical DeMiguel $1/N$ and regularized Markowitz benchmarks.
 
 **Keywords:** Deep Reinforcement Learning, Portfolio Optimization, Proximal Policy Optimization (PPO), Market Regime Detection, Multi-Objective Optimization, Quantitative Finance, Financial Machine Learning.
 
@@ -97,8 +95,12 @@ PPO optimizes the clipped surrogate policy objective:
 $$L^{\text{CLIP}}(\theta) = \hat{\mathbb{E}}_t \left[ \min\left( r_t(\theta)\hat{A}_t, \; \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t \right) \right]$$
 using Generalized Advantage Estimation (GAE) with $\gamma = 0.99, \lambda = 0.95, \epsilon = 0.20$.
 
-### E. Regulatory Risk Engine (Concentration Cap)
-A strict institutional ceiling of $\omega_{\max} = 0.35$ (35%) is enforced per asset. If $w_{i,t} > 0.35$, the asset is capped at 0.35 and the surplus capital is redistributed proportionally across unconstrained assets.
+### E. Convex Bounded Simplex Risk Projection Engine
+In institutional asset management, risk mandates restrict over-concentration in any individual asset. Following institutional compliance guidelines (e.g., UCITS 5/10/40), we enforce a hard maximum concentration cap of $\omega_{\max} = 0.35$ (35%) and a minimum diversification floor of $\omega_{\min} = 0.02$ (2%) per equity asset.
+
+Heuristic clipping followed by naive normalization frequently violates boundary conditions. Our risk engine implements an exact **Convex Quadratic Projection onto the Bounded Simplex (Water-Filling Algorithm)**:
+$$\min_{\mathbf{w}} \frac{1}{2} \|\mathbf{w} - \hat{\mathbf{w}}\|_2^2 \quad \text{s.t.} \quad \sum_{i=1}^N w_i = 1.0, \quad \omega_{\min} \le w_i \le \omega_{\max}$$
+solved to machine precision ($<10^{-9}$) via dual bisection root-finding on the Lagrange multiplier $\lambda$, strictly guaranteeing simplex normalization and box bounds simultaneously.
 
 ---
 
@@ -106,41 +108,40 @@ A strict institutional ceiling of $\omega_{\max} = 0.35$ (35%) is enforced per a
 
 ### A. Data Universe & Chronological Partition
 - **Assets**: AAPL, MSFT, GOOGL, AMZN, NVDA (NASDAQ top tech constituents).
-- **Timeframe**: January 4, 2016 to December 31, 2025 (2,514 trading days).
+- **Timeframe**: January 4, 2016 to February 2026.
 - **Splits**:
   - **Train**: 2016-01-04 to 2022-12-31 (1,563 days)
   - **Validation**: 2023-01-03 to 2023-12-29 (250 days)
-  - **Out-of-Sample Test**: 2024-01-02 to 2025-12-31 (502 unseen trading days)
+  - **Out-of-Sample Test**: 2024-01-02 to 2026-02-20 (726 unseen trading days)
 
 ### B. Benchmark Strategies
 1. **Equal Weight ($1/N$)**: Daily rebalanced 20% allocation across 5 assets.
 2. **Buy & Hold**: Initial equal allocation on Day 1, drifting unhedged with zero ongoing fees.
-3. **Markowitz MVO**: Daily numerical Sharpe maximization via SLSQP solver on expanding window with 35% cap.
+3. **Markowitz MVO**: Daily numerical Sharpe maximization via SLSQP solver on expanding window with 35% cap and covariance regularization ($\Sigma + 10^{-5} I$).
 4. **PPO (No Regime) [Ablation]**: PPO agent trained without regime features ($D=16$).
+5. **Regime-Aware PPO [Proposed]**: Full PPO agent conditioned on causal expanding-window macro regime states.
 
 ---
 
 ## V. Empirical Results and Discussion
 
-### Table 1: Out-of-Sample Benchmark Evaluation (2024–2025, 502 Trading Days)
+### Table 1: Out-of-Sample Benchmark Evaluation (2024–2026, 726 Trading Days)
 
 | Strategy | Cumulative Return (%) | CAGR (%) | Sharpe Ratio | Annual Volatility (%) | Max Drawdown (%) | Calmar Ratio | Total Turnover | Transaction Costs (INR) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Equal Weight ($1/N$)** | 102.20% | 42.50% | **1.46** | **25.00%** | **26.48%** | **1.60** | 6.11 | INR 8,696.21 |
-| **Buy & Hold** | **109.95%** | **45.22%** | 1.39 | 28.18% | 28.69% | 1.58 | **1.00** | **INR 1,000.00** |
-| **Markowitz MVO** | 106.17% | 43.90% | 1.33 | 29.01% | 31.68% | 1.39 | 21.45 | INR 30,984.32 |
-| **PPO (No Regime) [Ablation]** | 54.54% | 24.47% | 0.89 | 26.24% | 32.22% | 0.76 | 7.10 | INR 8,106.46 |
-| **Regime-Aware PPO [Proposed]** | **99.80%** | **41.64%** | **1.33** | 27.52% | 32.56% | 1.28 | 53.26 | INR 70,390.37 |
+| **Equal Weight ($1/N$)** | 98.44% | 26.90% | 1.02 | **24.17%** | **26.48%** | 1.02 | 8.78 | INR 14,419.97 |
+| **Buy & Hold** | 88.09% | 24.56% | 0.87 | 26.98% | 28.69% | 0.86 | **1.00** | **INR 1,000.00** |
+| **Markowitz MVO** | **126.37%** | **32.84%** | **1.18** | 24.96% | 28.49% | **1.15** | 22.70 | INR 40,157.86 |
+| **PPO (No Regime) [Ablation]** | 88.88% | 24.74% | 0.92 | 25.46% | 32.21% | 0.77 | 9.18 | INR 11,582.09 |
+| **Regime-Aware PPO [Proposed]** | 72.99% | 20.98% | 0.75 | 27.78% | 32.58% | 0.64 | 85.12 | INR 135,861.87 |
 
 ### Key Research Findings:
-1. **Regime Conditioning Advantage (Ablation Proof)**:
-   Adding market regime conditioning yielded a **+45.26% absolute return increase** (from 54.54% to 99.80%) and improved the Sharpe ratio from **0.89 to 1.33** (+0.44). The unconditioned policy collapsed into timid, sub-optimal weightings because it could not discern whether low volatility signaled a stable bull trend or a prelude to a downturn.
-2. **Comparison with Classical MVO**:
-   Regime-Aware PPO achieved an identical Sharpe ratio of 1.33 compared to Markowitz MVO, but does so with direct feedforward execution ($<1\text{ ms}$) without requiring repeated numerical matrix inversion or quadratic solvers.
-3. **Transaction Cost Discipline**:
-   Despite active rebalancing (turnover 53.26) and incurring INR 70,390.37 in transaction fees, the Regime-Aware PPO preserved a net 99.80% return, demonstrating the effectiveness of the $\lambda_{\text{cost}}$ turnover penalty.
-4. **Passive Concentration vs Active Compliance**:
-   While Buy & Hold posted 109.95%, its return was heavily skewed by uncontrolled drift into NVDA (>45% weight), which directly violates institutional safety guidelines. The Regime-Aware PPO strictly maintained the 35% asset concentration limit while achieving competitive near-100% net growth.
+1. **Academic Rigor & DeMiguel Baseline Invariance**:
+   Consistent with the landmark empirical study by DeMiguel et al. (2009), naive $1/N$ Equal Weighting and regularized Markowitz MVO are formidable out-of-sample baselines that benefit from zero or low estimation error.
+2. **Turnover Friction Drag in Continuous DRL**:
+   The active Regime-Aware PPO incurred 85.12 turnover units, resulting in INR 135,861.87 in trading friction under the 10 bps fee schedule. This illustrates the fundamental quant challenge: unconstrained policy oscillation generates turnover drag, highlighting the critical role of transaction cost dampeners ($\lambda_{\text{cost}}$) and execution middleware.
+3. **Institutional Constraint Enforcement**:
+   Unlike unhedged Buy & Hold, all active strategies strictly satisfied the institutional 35% concentration ceiling through our Convex Bounded Simplex Projection without any constraint breakdown.
 
 ---
 

@@ -4,7 +4,8 @@ Implements classical Modern Portfolio Theory (MPT):
 - Maximizes Sharpe ratio: (w^T * mu - Rf) / sqrt(w^T * Sigma * w)
 - Or minimizes variance: w^T * Sigma * w
 - Subject to full investment constraint: sum(w) = 1
-- Long-only constraint: 0 <= w_i <= 1
+- Long-only constraint with institutional bounds: 0 <= w_i <= 0.35 (35% cap)
+- Transparent fallback logging to prevent silent optimizer failures.
 """
 
 import logging
@@ -21,41 +22,50 @@ class MarkowitzOptimizer:
     """
     Solves classical Mean-Variance Optimization using historical lookback windows.
     Strictly avoids lookahead bias by using only data available up to decision date.
+    Tracks and logs solver convergence vs fallback frequency.
     """
     def __init__(
         self,
         n_assets: int,
         lookback_window: int = 60,
         risk_free_rate: float = 0.02,
+        max_asset_weight: float = 0.35,
         objective: str = "max_sharpe"
     ):
         self.n_assets = n_assets
         self.lookback_window = lookback_window
         self.risk_free_rate = risk_free_rate
+        self.max_asset_weight = max_asset_weight
         self.objective = objective
+        self.total_optimizations = 0
+        self.fallback_count = 0
 
     def optimize(
         self,
         historical_returns: np.ndarray
     ) -> np.ndarray:
         """
-        historical_returns: 2D array of shape (lookback, n_assets)
+        historical_returns: 2D array of shape (lookback, n_assets).
         Returns: optimal weights vector of shape (n_assets,) summing to 1.0.
         """
+        self.total_optimizations += 1
         n = self.n_assets
+
         if len(historical_returns) < n:
+            self.fallback_count += 1
+            logger.warning("Insufficient history for covariance matrix. Falling back to 1/N.")
             return np.ones(n) / n
 
         # Annualized expected returns and covariance matrix
         mu = np.mean(historical_returns, axis=0) * 252.0
         sigma = np.cov(historical_returns, rowvar=False) * 252.0
 
-        # Regularize covariance matrix slightly to ensure positive definiteness
-        sigma += np.eye(n) * 1e-6
+        # Regularize covariance matrix to guarantee positive definiteness
+        sigma += np.eye(n) * 1e-5
 
         # Initial guess: equal weights
         init_weights = np.ones(n) / n
-        bounds = tuple((0.0, 1.0) for _ in range(n))
+        bounds = tuple((0.0, self.max_asset_weight) for _ in range(n))
         constraints = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
 
         if self.objective == "max_sharpe":
@@ -74,7 +84,6 @@ class MarkowitzOptimizer:
                 constraints=constraints,
                 options={'maxiter': 500, 'ftol': 1e-7}
             )
-
         elif self.objective == "min_variance":
             def port_variance(w):
                 return np.dot(w.T, np.dot(sigma, w))
@@ -91,12 +100,19 @@ class MarkowitzOptimizer:
             raise ValueError(f"Unknown objective: {self.objective}")
 
         if res.success:
-            weights = np.clip(res.x, 0.0, 1.0)
+            weights = np.clip(res.x, 0.0, self.max_asset_weight)
             s = np.sum(weights)
             return weights / s if s > 0 else np.ones(n) / n
         else:
-            # Fallback to equal weights
+            self.fallback_count += 1
+            logger.warning(f"MVO SLSQP solver did not converge (status: {res.message}). Logging fallback to 1/N.")
             return np.ones(n) / n
+
+    def get_convergence_rate(self) -> float:
+        """Returns the percentage of optimizations that converged successfully."""
+        if self.total_optimizations == 0:
+            return 100.0
+        return ((self.total_optimizations - self.fallback_count) / self.total_optimizations) * 100.0
 
 
 if __name__ == "__main__":
@@ -104,5 +120,6 @@ if __name__ == "__main__":
     fake_returns = np.random.normal(0.0005, 0.015, size=(120, 5))
     opt = MarkowitzOptimizer(n_assets=5, lookback_window=120)
     w = opt.optimize(fake_returns)
-    print("Optimal MVO Weights:", np.round(w, 4))
+    print("Optimal MVO Weights (with 35% cap):", np.round(w, 4))
     print("Sum of weights:", np.sum(w))
+    print(f"Solver Convergence: {opt.get_convergence_rate():.1f}%")
