@@ -35,9 +35,16 @@ def project_to_bounded_simplex(
     Guarantees:
     - sum(w*) == 1.0 to machine precision.
     - lower_bound <= w_i* <= upper_bound strictly satisfied for every asset.
+    - Robust against non-finite values (NaN, Inf), negative weights, and extreme logits.
     """
     w_raw = np.asarray(raw_weights, dtype=float)
     n = len(w_raw)
+
+    if n == 0:
+        raise ValueError("Asset count must be greater than zero.")
+
+    # Sanitize inputs: replace NaNs and infinities with equal weight distribution
+    w_raw = np.nan_to_num(w_raw, nan=1.0 / n, posinf=upper_bound, neginf=lower_bound)
 
     if n * lower_bound > 1.0 + 1e-7 or n * upper_bound < 1.0 - 1e-7:
         raise ValueError(

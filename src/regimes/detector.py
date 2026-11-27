@@ -58,9 +58,9 @@ def detect_market_regimes(
     avg_volatility = features[vol_cols].mean(axis=1)
 
     # 4. Strictly causal expanding 75th percentile threshold (NO future information leakage)
-    expanding_vol_threshold = avg_volatility.expanding(min_periods=min_warmup_periods).quantile(vol_quantile_threshold)
-    warmup_val = float(avg_volatility.iloc[:min_warmup_periods].quantile(vol_quantile_threshold))
-    expanding_vol_threshold = expanding_vol_threshold.fillna(warmup_val)
+    # Using min_periods=1 guarantees that day t only uses volatility observations from days 1..t.
+    # No forward-looking warmup fillna is used.
+    expanding_vol_threshold = avg_volatility.expanding(min_periods=1).quantile(vol_quantile_threshold)
 
     logger.info("Classifying market regimes with strictly causal expanding volatility threshold...")
 

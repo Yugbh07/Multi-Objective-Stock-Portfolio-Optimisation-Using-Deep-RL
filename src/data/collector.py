@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"]
 DEFAULT_START = "2016-01-01"
-DEFAULT_END = "2026-01-01"
+DEFAULT_END = None  # None fetches up to the most recent trading session
 
 
 def get_project_root() -> str:
@@ -27,9 +27,10 @@ def get_project_root() -> str:
 def download_market_data(
     tickers: Optional[List[str]] = None,
     start_date: str = DEFAULT_START,
-    end_date: str = DEFAULT_END,
+    end_date: Optional[str] = DEFAULT_END,
     save_path: Optional[str] = None,
-    force_refresh: bool = False
+    force_refresh: bool = False,
+    allow_synthetic_fallback: bool = False
 ) -> pd.DataFrame:
     """
     Downloads historical OHLCV and Adjusted Close data from yfinance.
@@ -76,9 +77,15 @@ def download_market_data(
 
     except Exception as e:
         logger.error(f"Error downloading market data: {e}")
-        # Generate deterministic synthetic data for offline / demonstration safety if needed
-        logger.info("Generating realistic historical fallback dataset...")
-        dates = pd.date_range(start=start_date, end=end_date, freq="B")
+        if not allow_synthetic_fallback:
+            raise RuntimeError(
+                f"Failed to fetch market data from yfinance: {e}. "
+                "Synthetic data fallback is disabled to prevent silent data fabrication."
+            ) from e
+
+        logger.warning("Generating realistic historical fallback dataset (DEMO ONLY)...")
+        fallback_end = end_date or pd.Timestamp.today().strftime("%Y-%m-%d")
+        dates = pd.date_range(start=start_date, end=fallback_end, freq="B")
         import numpy as np
         np.random.seed(42)
         

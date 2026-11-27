@@ -8,11 +8,19 @@ Implements classical Modern Portfolio Theory (MPT):
 - Transparent fallback logging to prevent silent optimizer failures.
 """
 
+import os
+import sys
 import logging
 from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from src.portfolio.risk_engine import project_to_bounded_simplex
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -51,9 +59,13 @@ class MarkowitzOptimizer:
         self.total_optimizations += 1
         n = self.n_assets
 
-        if len(historical_returns) < n:
+        # Slice to lookback_window if caller provided longer series
+        if len(historical_returns) > self.lookback_window:
+            historical_returns = historical_returns[-self.lookback_window:]
+
+        if len(historical_returns) < max(20, n * 2):
             self.fallback_count += 1
-            logger.warning("Insufficient history for covariance matrix. Falling back to 1/N.")
+            logger.warning(f"Insufficient history ({len(historical_returns)} < {max(20, n * 2)}) for covariance matrix. Falling back to 1/N.")
             return np.ones(n) / n
 
         # Annualized expected returns and covariance matrix
@@ -100,9 +112,7 @@ class MarkowitzOptimizer:
             raise ValueError(f"Unknown objective: {self.objective}")
 
         if res.success:
-            weights = np.clip(res.x, 0.0, self.max_asset_weight)
-            s = np.sum(weights)
-            return weights / s if s > 0 else np.ones(n) / n
+            return project_to_bounded_simplex(res.x, lower_bound=0.0, upper_bound=self.max_asset_weight)
         else:
             self.fallback_count += 1
             logger.warning(f"MVO SLSQP solver did not converge (status: {res.message}). Logging fallback to 1/N.")

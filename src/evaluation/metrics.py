@@ -85,6 +85,30 @@ def compute_calmar_ratio(cagr: float, max_drawdown: float) -> float:
     return float(cagr / max_drawdown)
 
 
+def compute_sortino_ratio(
+    daily_returns: Union[pd.Series, np.ndarray],
+    risk_free_rate: float = 0.02,
+    periods_per_year: int = 252
+) -> float:
+    """
+    Annualized Sortino ratio: penalizes only downside volatility.
+    Sortino = (Annualized Return - Rf) / Annualized Downside Deviation
+    """
+    r = np.asarray(daily_returns)
+    r = r[~np.isnan(r)]
+    if len(r) < 2:
+        return 0.0
+    rf_daily = risk_free_rate / periods_per_year
+    excess = r - rf_daily
+    downside = np.minimum(0.0, excess)
+    downside_var = np.mean(downside ** 2)
+    downside_vol = np.sqrt(downside_var) * np.sqrt(periods_per_year)
+    if downside_vol <= 1e-8:
+        return 0.0
+    annual_return = np.mean(r) * periods_per_year
+    return float((annual_return - risk_free_rate) / downside_vol)
+
+
 def evaluate_portfolio(
     portfolio_values: Union[pd.Series, np.ndarray],
     turnovers: Optional[Union[pd.Series, np.ndarray]] = None,
@@ -101,6 +125,7 @@ def evaluate_portfolio(
     cagr = compute_cagr(v)
     ann_vol = compute_annualized_volatility(daily_returns)
     sharpe = compute_sharpe_ratio(daily_returns, risk_free_rate=risk_free_rate)
+    sortino = compute_sortino_ratio(daily_returns, risk_free_rate=risk_free_rate)
     mdd = compute_max_drawdown(v)
     calmar = compute_calmar_ratio(cagr, mdd)
 
@@ -113,6 +138,7 @@ def evaluate_portfolio(
         "cagr": cagr,
         "annualized_volatility": ann_vol,
         "sharpe_ratio": sharpe,
+        "sortino_ratio": sortino,
         "max_drawdown": mdd,
         "calmar_ratio": calmar,
         "total_turnover": total_turnover,

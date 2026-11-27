@@ -80,30 +80,43 @@ class BacktestEngine:
         turnovers[0] = initial_turnover
         fees[0] = initial_fee
 
-        # Iterate through remaining trading days
+        # Iterate through remaining trading days. weights_matrix[t] is the target
+        # portfolio available before return_sub[t] is realized. This convention
+        # matches PPO inference: the action observed at t-1 is stored on date t
+        # and earns the return from t-1 to t (no one-day execution lag).
         for t in range(1, n_days):
             target_weights = weights_matrix[t]
             day_returns = returns_sub[t]
 
-            # 1. Asset returns applied to existing positions
-            step_asset_growth = 1.0 + day_returns
-            drifted_values = current_weights * current_val * step_asset_growth
-            drifted_total_val = np.sum(drifted_values)
+            # 1. Rebalance at the start of day t, before its return is earned.
+            turnover = float(np.sum(np.abs(target_weights - current_weights)))
+            cost = turnover * current_val * self.transaction_cost_rate
+            value_after_cost = current_val - cost
 
-            # Drifted weights before rebalancing
-            drifted_weights = drifted_values / drifted_total_val if drifted_total_val > 0 else current_weights
+            # 2. Earn day-t returns on the target allocation.
+            asset_growth = 1.0 + day_returns
+            portfolio_gross_return = float(np.dot(target_weights, day_returns))
+            current_val = value_after_cost * (1.0 + portfolio_gross_return)
 
-            # 2. Rebalancing & Transaction Cost
-            delta_w = np.sum(np.abs(target_weights - drifted_weights))
-            cost = delta_w * drifted_total_val * self.transaction_cost_rate
 
-            current_val = drifted_total_val - cost
-            turnovers[t] = delta_w
+            # 3. Track end-of-day drifted weights for next day's turnover.
+            grown_positions = target_weights * asset_growth
+            gross_factor = float(np.sum(grown_positions))
+            current_weights = (
+                grown_positions / gross_factor
+                if gross_factor > 0.0
+                else target_weights.copy()
+            )
+
+            turnovers[t] = turnover
             fees[t] = cost
             portfolio_values[t] = current_val
-            daily_returns[t] = (current_val - portfolio_values[t - 1]) / portfolio_values[t - 1]
-
-            current_weights = target_weights
+            previous_value = portfolio_values[t - 1]
+            daily_returns[t] = (
+                (current_val - previous_value) / previous_value
+                if previous_value > 0.0
+                else 0.0
+            )
 
         # Construct results dataframe
         results_df = pd.DataFrame({
@@ -142,19 +155,27 @@ class BacktestEngine:
         return self.run_strategy_weights(weights_df, strategy_name="Equal Weight")
 
     def backtest_buy_and_hold(self) -> Dict[str, Any]:
-        """Backtests Buy & Hold (only rebalanced on Day 0)."""
+        """Backtests Buy & Hold (only rebalanced on Day 0).
+
+
+        Each row contains the allocation available before that date's return is
+        realized. We therefore store the prior day's drifted weights for date t,
+        then update the allocation using return[t] for the next date.
+        """
         dates = self.returns_df.index
         n_days = len(dates)
         weights_matrix = np.zeros((n_days, self.n_assets))
         w = np.ones(self.n_assets) / self.n_assets
         weights_matrix[0] = w
 
+
         returns = self.returns_df.values
         for t in range(1, n_days):
-            grown = w * (1.0 + returns[t])
-            s = np.sum(grown)
-            w = grown / s if s > 0 else w
+            # Today's target is yesterday's end-of-day drifted allocation.
             weights_matrix[t] = w
+            grown = w * (1.0 + returns[t])
+            total = float(np.sum(grown))
+            w = grown / total if total > 0.0 else w
 
         weights_df = pd.DataFrame(weights_matrix, index=dates, columns=self.tickers)
         return self.run_strategy_weights(weights_df, strategy_name="Buy & Hold")

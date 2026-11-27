@@ -22,6 +22,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from src.portfolio.risk_engine import project_to_bounded_simplex
+
 
 class PortfolioEnv(gym.Env):
     """
@@ -94,10 +96,31 @@ class PortfolioEnv(gym.Env):
         self.current_weights = np.ones(self.n_assets, dtype=np.float32) / self.n_assets
         self.cash_ratio = 0.0
 
+    def _action_to_weights(self, action: np.ndarray) -> np.ndarray:
+        """
+        Maps continuous PPO action logits to bounded probability simplex:
+        1. Numerical stable softmax for valid initial probability simplex.
+        2. Exact convex water-filling projection guaranteeing:
+           - lower_bound = 0.02 (2% diversification floor)
+           - upper_bound = 0.35 (35% institutional concentration cap)
+           - sum(weights) == 1.0 (exact full investment simplex constraint).
+        """
+        a = np.asarray(action, dtype=np.float64)
+        a = np.nan_to_num(a, nan=0.0, posinf=5.0, neginf=-5.0)
+        shifted = a - np.max(a)
+        exp_a = np.exp(shifted)
+        raw_w = exp_a / np.sum(exp_a)
+
+        bounded_w = project_to_bounded_simplex(
+            raw_weights=raw_w,
+            lower_bound=0.02,
+            upper_bound=0.35
+        )
+        return bounded_w.astype(np.float32)
+
     def _softmax(self, x: np.ndarray) -> np.ndarray:
-        """Numerically stable softmax to produce valid probability simplex weights."""
-        e_x = np.exp(x - np.max(x))
-        return e_x / np.sum(e_x)
+        """Backward-compatible alias for _action_to_weights."""
+        return self._action_to_weights(x)
 
     def _get_regime_one_hot(self, step: int) -> np.ndarray:
         """Returns 3-element one-hot vector: [Bull, Bear, High Volatility]."""
@@ -171,22 +194,24 @@ class PortfolioEnv(gym.Env):
             truncated = False
             return self._get_observation(), 0.0, terminated, truncated, {"step": t, "portfolio_value": self.portfolio_value}
 
-        # 1. Action mapped to target weights on the simplex
-        target_weights = self._softmax(action)
+        # 1. Action mapped to target weights on the bounded simplex (35% cap, 2% floor)
+        target_weights = self._action_to_weights(action)
 
         # 2. Rebalancing turnover and transaction fee at day t
         turnover = float(np.sum(np.abs(target_weights - self.current_weights)))
-        cost = turnover * self.transaction_cost_rate
+        cost_rate = self.transaction_cost_rate
+        fee_factor = max(0.0, 1.0 - turnover * cost_rate)
+        cost_in_capital = self.portfolio_value * turnover * cost_rate
 
         # 3. Next-day forward asset returns realized over day t -> t+1 (STRICTLY CAUSAL)
         forward_returns = self.returns_matrix[next_t]
 
-        # 4. Portfolio return net of transaction friction
+        # 4. Portfolio value and return compounding (strictly aligned with BacktestEngine)
         portfolio_gross_return = float(np.dot(target_weights, forward_returns))
-        portfolio_net_return = portfolio_gross_return - cost
-
-        # Update portfolio equity
-        self.portfolio_value = self.portfolio_value * (1.0 + portfolio_net_return)
+        value_after_fee = self.portfolio_value * fee_factor
+        next_portfolio_value = value_after_fee * (1.0 + portfolio_gross_return)
+        portfolio_net_return = float((next_portfolio_value - self.portfolio_value) / self.portfolio_value) if self.portfolio_value > 0 else 0.0
+        self.portfolio_value = next_portfolio_value
 
         # 5. Risk estimate: Portfolio variance estimated using trailing historical covariance up to day t
         lookback_start = max(0, t - self.lookback_window)
@@ -222,7 +247,7 @@ class PortfolioEnv(gym.Env):
             "portfolio_value": self.portfolio_value,
             "net_return": portfolio_net_return,
             "turnover": turnover,
-            "cost": cost,
+            "cost": cost_in_capital,
             "weights": target_weights
         }
 

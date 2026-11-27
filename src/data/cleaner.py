@@ -48,11 +48,11 @@ def clean_market_data(
         logger.warning(f"Found {df.index.duplicated().sum()} duplicated dates. Retaining first.")
         df = df[~df.index.duplicated(keep="first")]
 
-    # 3. Check missing values
+    # 3. Check missing values: causal forward fill only (never backfill future prices into past)
     missing_count = df.isna().sum().sum()
     if missing_count > 0:
-        logger.info(f"Filling {missing_count} missing values via forward fill then backward fill...")
-        df = df.ffill().bfill()
+        logger.info(f"Filling {missing_count} missing values via causal forward fill...")
+        df = df.ffill()
 
     # 4. Extract Adjusted Close price matrix (splits & dividends accounted for)
     if "Adj Close" in df.columns.levels[0]:

@@ -355,7 +355,7 @@ To validate real-world deployability, we engineered a standalone, modular virtua
 The out-of-sample backtest results across all five asset allocation strategies over the 502 unseen trading days (2024--2025) are presented in Table \ref{tab:results}.
 
 \begin{table*}[t]
-\caption{Out-of-Sample Performance Comparison on Unseen Test Dataset (2024--2026, 726 Trading Days)}
+\caption{Out-of-Sample Performance Comparison on Unseen Test Dataset (2024--2026, 729 Trading Days)}
 \label{tab:results}
 \centering
 \begin{tabular}{lcccccccc}
@@ -363,12 +363,12 @@ The out-of-sample backtest results across all five asset allocation strategies o
 \textbf{Strategy} & \textbf{Cumulative} & \textbf{CAGR} & \textbf{Sharpe} & \textbf{Annual} & \textbf{Max} & \textbf{Calmar} & \textbf{Total} & \textbf{Transaction Costs} \\
  & \textbf{Return (\%)} & \textbf{(\%)} & \textbf{Ratio} & \textbf{Volatility (\%)} & \textbf{Drawdown (\%)} & \textbf{Ratio} & \textbf{Turnover} & \textbf{(INR)} \\
 \midrule
-Equal Weight ($1/N$) & 98.44\% & 26.90\% & 1.02 & \textbf{24.17\%} & \textbf{26.48\%} & 1.02 & 8.78 & 14,419.97 \\
-Buy \& Hold & 88.09\% & 24.56\% & 0.87 & 26.98\% & 28.69\% & 0.86 & \textbf{1.00} & \textbf{1,000.00} \\
-Markowitz MVO & \textbf{126.37\%} & \textbf{32.84\%} & \textbf{1.18} & 24.96\% & 28.49\% & \textbf{1.15} & 22.70 & 40,157.86 \\
+Equal Weight ($1/N$) & 109.36\% & 29.14\% & 1.08 & 24.72\% & 26.48\% & 1.10 & 8.89 & 14,638.91 \\
+Buy \& Hold & 100.53\% & 27.23\% & 0.93 & 27.78\% & 28.69\% & 0.95 & \textbf{1.00} & \textbf{1,000.00} \\
+Markowitz MVO & \textbf{141.80\%} & \textbf{35.75\%} & \textbf{1.27} & 24.98\% & 29.86\% & \textbf{1.20} & 22.78 & 40,983.60 \\
 \midrule
-\textbf{PPO (No Regime) [Ablation]} & 88.88\% & 24.74\% & 0.92 & 25.46\% & 32.21\% & 0.77 & 9.18 & 11,582.09 \\
-\textbf{Regime-Aware PPO [Proposed]} & 72.99\% & 20.98\% & 0.75 & 27.78\% & 32.58\% & 0.64 & 85.12 & 135,861.87 \\
+\textbf{PPO (No Regime) [Ablation]} & 97.94\% & 26.66\% & 1.07 & \textbf{22.68\%} & 26.88\% & 0.99 & 12.33 & 18,362.50 \\
+\textbf{Regime-Aware PPO [Proposed]} & 105.01\% & 28.21\% & 1.07 & 24.05\% & \textbf{26.43\%} & 1.07 & 49.10 & 82,963.46 \\
 \bottomrule
 \end{tabular}
 \end{table*}

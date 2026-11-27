@@ -63,6 +63,24 @@ st.sidebar.subheader("🤖 RL Policy Controls")
 use_regime = st.sidebar.checkbox("Enable Regime-Aware Policy", value=True)
 apply_risk_guardrails = st.sidebar.checkbox("Enforce 35% Asset Cap", value=True)
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("📡 Real-Time Market Sync")
+if st.sidebar.button("🔄 Fetch Live Market Data"):
+    with st.spinner("Fetching latest live daily prices and updating regime detector..."):
+        from src.data.collector import download_market_data
+        from src.data.cleaner import clean_market_data
+        from src.features.engineer import compute_features
+        from src.regimes.detector import detect_market_regimes
+        try:
+            download_market_data(force_refresh=True)
+            clean_market_data()
+            compute_features()
+            detect_market_regimes()
+            st.sidebar.success("Market data successfully synchronized to latest session!")
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"Live sync error: {e}")
+
 # Current Market Regime
 latest_date_str = regimes_df.index[-1].strftime("%d %b %Y")
 latest_regime = str(regimes_df["regime"].iloc[-1])
@@ -78,7 +96,8 @@ with col_m2:
         reg_badge = '<span class="badge-bear">🔴 BEARISH</span>'
     else:
         reg_badge = '<span class="badge-vol">🟡 HIGH VOLATILITY</span>'
-    st.markdown(f"**Market Regime** ({latest_date_str})<br>{reg_badge}", unsafe_allow_html=True)
+    st.markdown(f"**Market Regime** (Close: {latest_date_str})<br>{reg_badge}", unsafe_allow_html=True)
+    st.caption(f"Latest trading session: {latest_date_str}")
 with col_m3:
     st.metric("Rolling Volatility", f"{latest_vol:.2f}%")
 with col_m4:
