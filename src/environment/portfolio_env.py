@@ -116,7 +116,7 @@ class PortfolioEnv(gym.Env):
             lower_bound=0.02,
             upper_bound=0.35
         )
-        return bounded_w.astype(np.float32)
+        return bounded_w.astype(np.float64)
 
     def _softmax(self, x: np.ndarray) -> np.ndarray:
         """Backward-compatible alias for _action_to_weights."""

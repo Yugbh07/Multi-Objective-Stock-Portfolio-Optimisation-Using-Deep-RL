@@ -72,7 +72,7 @@ class TestCrossComponentParity:
 
         obs, info_init = env.reset()
         # Set target weights directly by mocking _action_to_weights
-        env._action_to_weights = lambda a: np.array([0.35, 0.65], dtype=np.float32)
+        env._action_to_weights = lambda a: np.array([0.35, 0.65], dtype=np.float64)
 
         obs, reward, term, trunc, info_step = env.step(np.zeros(2))
 
