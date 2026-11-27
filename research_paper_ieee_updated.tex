@@ -1,0 +1,437 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{balance}
+\usepackage{url}
+\usepackage{microtype}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Multi-Objective Portfolio Optimization Using Deep Reinforcement Learning and Market Regime Conditioning}
+
+\author{
+\IEEEauthorblockN{1\textsuperscript{st} Yug Bhandari}
+\IEEEauthorblockA{\textit{Dept. of Computer Science \& Engg.} \\
+\textit{IILM University}\\
+Greater Noida, India \\
+Roll No: 2410031103 \\
+yug.bhandari.ug24@iilm.edu}
+\and
+\IEEEauthorblockN{2\textsuperscript{nd} Nimisha Mishra}
+\IEEEauthorblockA{\textit{Dept. of Computer Science \& Engg.} \\
+\textit{IILM University}\\
+Greater Noida, India \\
+Roll No: 2410030123 \\
+nimisha.mishra.ug24@iilm.edu}
+\and
+\IEEEauthorblockN{3\textsuperscript{rd} Yojit Bhatt}
+\IEEEauthorblockA{\textit{Dept. of Computer Science \& Engg.} \\
+\textit{IILM University}\\
+Greater Noida, India \\
+Roll No: 2410031104 \\
+yojit.bhatt.ug24@iilm.edu}
+\and
+\IEEEauthorblockN{4\textsuperscript{th} Jahanvi Jha}
+\IEEEauthorblockA{\textit{Dept. of Computer Science \& Engg.} \\
+\textit{IILM University}\\
+Greater Noida, India \\
+Roll No: 2410030454 \\
+jahanvi.jha.ug24@iilm.edu}
+\and
+\IEEEauthorblockN{5\textsuperscript{th} Sunny Ranjan}
+\IEEEauthorblockA{\textit{Dept. of Computer Science \& Engg.} \\
+\textit{IILM University}\\
+Greater Noida, India \\
+Roll No: 2410030457 \\
+sunny.ranjan.ug24@iilm.edu}
+\and
+\IEEEauthorblockN{6\textsuperscript{th} Vishakha Agarwal}
+\IEEEauthorblockA{\textit{Assistant Professor (Supervisor)} \\
+\textit{Dept. of Computer Science \& Engg.} \\
+\textit{IILM University}\\
+Greater Noida, India \\
+vishakha.agarwal@iilm.edu}
+}
+
+\maketitle
+
+\begin{abstract}
+Dynamic portfolio allocation is challenging under changing market conditions, estimation uncertainty, and trading costs. This study implements and evaluates a portfolio allocation framework that combines Proximal Policy Optimization (PPO) with deterministic market-regime features. The framework is compared with Equal Weight, Buy \& Hold, rolling Markowitz Mean-Variance Optimization (MVO), and a PPO ablation without regime inputs. Five large-cap U.S. equities (AAPL, MSFT, GOOGL, AMZN, and NVDA) are evaluated using daily market data from January 2016 through November 25, 2026. The latest out-of-sample evaluation covers January 2, 2024 through November 25, 2026 (729 observations), with a 10-basis-point transaction-cost assumption and INR 1,000,000 initial capital. Markowitz MVO achieved the highest observed CAGR (37.53\%) and Sharpe ratio (1.300), while Regime-Aware PPO had the lowest maximum drawdown among the tested strategies (26.43\%). Regime-Aware PPO outperformed the PPO ablation in CAGR (28.21\% versus 26.66\%), but its turnover and transaction costs were substantially higher. These findings are descriptive results from a single historical test window and do not establish statistical significance or future performance.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Deep Reinforcement Learning, Portfolio Optimization, Proximal Policy Optimization (PPO), Market Regime Detection, Multi-Objective Optimization, Quantitative Finance, Financial Machine Learning.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Modern quantitative finance is founded upon the seminal Mean-Variance Optimization (MVO) framework introduced by Harry Markowitz in 1952 \cite{markowitz1952portfolio}. By framing asset allocation as a quadratic programming problem balancing expected portfolio return against covariance risk, MVO established the theoretical bedrock of modern portfolio management. However, in contemporary dynamic markets, MVO exhibits fundamental structural shortcomings. First, MVO assumes that asset returns follow a stationary Gaussian distribution, an assumption repeatedly violated by empirical financial time series characterized by fat tails, volatility clustering, and skewness \cite{mandelbrot1963variation, cont2001empirical}. Second, classical sample covariance estimators are notoriously susceptible to estimation noise, causing MVO solvers to act as ``error maximizers'' that concentrate capital into extreme, fragile allocations \cite{michaud1989markowitz}. Third, traditional optimization schemes cannot adaptively adjust rebalancing frequencies in response to market friction, incurring substantial transaction costs and turnover drag.
+
+To address non-stationarity, Deep Reinforcement Learning (DRL) has emerged as a promising paradigm for sequential financial decision-making \cite{jiang2017deep, liang2018adversarial}. Unlike supervised learning models that predict next-period asset prices, DRL agents interact directly with simulated market environments, learning continuous control policies that map observed market states directly to optimal portfolio weights $\mathbf{w}_t \in \Delta^N$. By optimizing long-term cumulative discounted rewards, DRL agents can theoretically capture nonlinear multi-asset interdependencies, adapt to time-varying correlation structures, and internalize transaction frictions.
+
+Despite these theoretical advantages, deploying DRL to algorithmic asset management presents three severe practical hurdles:
+\begin{enumerate}
+    \item \textbf{Regime-Blind Policy Degradation:} Financial markets alternate between distinct macroeconomic regimes---prolonged secular bull markets, sudden liquidity-driven bear markets, and sideways high-volatility environments. Unconditioned DRL policies trained across mixed regimes often overfit to dominant bullish trends and experience severe drawdowns during sudden volatility spikes.
+    \item \textbf{Transaction Cost Friction and Churn:} Model-free continuous action agents frequently oscillate between portfolio weights on a daily basis, causing excessive turnover that severely erodes real-world performance after accounting for brokerage commissions, exchange fees, and bid-ask slippage.
+    \item \textbf{Regulatory and Concentration Risks:} Theoretical unbounded simplex weights can allocate up to 100\% of capital to a single volatile asset, violating realistic institutional compliance thresholds (e.g., UCITS 5/10/40 concentration limits).
+\end{enumerate}
+
+To explore these challenges, this paper implements and evaluates a portfolio allocation framework for \textbf{Multi-Objective Portfolio Optimization Using Deep Reinforcement Learning and Market Regime Conditioning}. The scope of this study is an experimental software implementation and historical backtest, rather than a production deployment or evidence of investable performance. The contributions are summarized as follows:
+\begin{itemize}
+    \item \textbf{Regime-Conditioned MDP Formulation:} We design a 19-dimensional continuous observation space that combines trailing asset returns, rolling volatility, current portfolio drift, and a deterministic 3-state market regime indicator (Bull, Bear, High Volatility), allowing the policy to dynamically modulate its risk aversion based on macro conditions.
+    \item \textbf{Multi-Objective Penalized Reward Function:} We construct a customized reward formulation that explicitly balances daily net return against both rolling portfolio covariance variance and quadratic rebalancing turnover penalties under a realistic 10 basis points (0.10\%) transaction cost schedule.
+    \item \textbf{Out-of-Sample Benchmarking and Ablation:} We compare Equal Weight, Buy \& Hold, rolling Markowitz MVO, PPO without regime inputs, and Regime-Aware PPO over a common 729-observation test interval from 2024-01-02 to 2026-11-25.
+    \item \textbf{Trading-Friction Analysis:} We report turnover and transaction costs alongside return and risk metrics to assess whether the regime-conditioned policy's performance differences justify its trading activity. Implementation components not directly evaluated in the current backtest are not treated as evidence of live-market readiness.
+\end{itemize}
+
+The remainder of this paper is structured as follows: Section II reviews related literature in portfolio optimization and financial DRL. Section III details the mathematical problem formulation, regime classification, and policy optimization methodology. Section IV outlines the experimental setup, data pipeline, and benchmark models. Section V provides empirical results, ablation analyses, and transaction cost discussions. Finally, Section VI concludes the paper with directions for future research.
+
+\section{Related Work}
+
+\subsection{Classical Portfolio Optimization and Factor Models}
+Portfolio optimization began with Markowitz's Mean-Variance framework \cite{markowitz1952portfolio}, subsequently extended into the Capital Asset Pricing Model (CAPM) by Sharpe \cite{sharpe1964capital} and Lintner \cite{lintner1965valuation}. To resolve the sensitivity of MVO to sample estimation noise, Black and Litterman \cite{black1992global} integrated subjective investor views with market equilibrium returns using Bayesian updating. Later approaches introduced mathematical regularization, including Ledoit and Wolf's shrinkage covariance estimators \cite{ledoit2004well} and DeMiguel et al.'s empirical demonstration that simple Equal Weighting ($1/N$) frequently outperforms complex optimizing models out-of-sample due to zero estimation error \cite{demiguel2009optimal}.
+
+\subsection{Deep Reinforcement Learning in Asset Allocation}
+Early applications of reinforcement learning to financial trading utilized Recurrent Reinforcement Learning (RRL) to optimize Sharpe ratios directly \cite{moody2001learning}. With the advent of deep learning, Jiang et al. \cite{jiang2017deep} introduced the Ensemble Indeterministic Intelligence Ensemble (EIIE) framework utilizing Deep Deterministic Policy Gradients (DDPG) and Convolutional Neural Networks for cryptocurrency portfolio rebalancing. Liang et al. \cite{liang2018adversarial} compared DDPG, Proximal Policy Optimization (PPO), and Policy Gradient methods in stock markets, highlighting that policy-gradient methods provide enhanced stability compared to value-based Q-learning in continuous portfolio spaces. Ding et al. \cite{ding2020deep} investigated multi-agent architectures for equity portfolios, while Zhang et al. \cite{zhang2020deep} demonstrated that cost-aware reward functions are mandatory to prevent catastrophic capital depletion from churn.
+
+\subsection{Market Regime Identification and Regime-Switching}
+Financial markets exhibit non-linear structural transitions driven by business cycles, monetary policy, and sentiment shocks. Hamilton's Markov-Switching models \cite{hamilton1989new} formalized regime-dependent transitions, demonstrating that asset return volatility varies dramatically across states \cite{guidolin2011markov}. Ang and Bekaert \cite{ang2002regime} showed that dynamic asset allocation conditioned on bear-market volatility states significantly improves out-of-sample investor utility. In machine learning, researchers have explored Hidden Markov Models (HMMs) and clustering methods \cite{kritzman2012regime} to categorize latent market states. However, latent statistical clusters often lack intuitive interpretability and can introduce look-ahead bias if re-estimated naively. In this paper, we employ robust, causal trend-and-volatility heuristic rules that classify regimes instantaneously without forward information leakage.
+
+\section{Problem Formulation and Methodology}
+
+\subsection{Markov Decision Process (MDP) Formulation}
+We model discrete-time portfolio allocation as an infinite-horizon discounted Markov Decision Process denoted by the tuple $(\mathcal{S}, \mathcal{A}, \mathcal{P}, \mathcal{R}, \gamma)$, where:
+\begin{itemize}
+    \item $\mathcal{S} \subset \mathbb{R}^{D}$ is the continuous state space of dimension $D = 19$.
+    \item $\mathcal{A} \subset \mathbb{R}^{N}$ is the continuous action space representing raw asset preference logits across $N = 5$ equity assets.
+    \item $\mathcal{P}: \mathcal{S} \times \mathcal{A} \times \mathcal{S} \rightarrow [0, 1]$ represents the unknown transition probability distribution governed by real-world financial market price movements.
+    \item $\mathcal{R}: \mathcal{S} \times \mathcal{A} \rightarrow \mathbb{R}$ is the multi-objective reward function.
+    \item $\gamma \in [0, 1)$ is the temporal discount factor, set to $\gamma = 0.99$.
+\end{itemize}
+
+At each trading day $t \in \{1, 2, \dots, T\}$, the agent observes state $\mathbf{s}_t$ constructed strictly from market information up to close of day $t$. The policy maps $\mathbf{s}_t$ to target portfolio weights $\mathbf{w}_t \in \Delta^N$. Rebalancing occurs at market close of day $t$ (or open of day $t+1$), incurring transaction friction $c_{\text{fee}} \cdot \|\mathbf{w}_t - \mathbf{w}_{t-1}'\|_1$. Over the subsequent trading day $[t, t+1]$, the portfolio earns forward return $\mathbf{w}_t^\top \mathbf{R}_{t+1}$. Portfolio weights drift endogenously to $\mathbf{w}_{t+1}' = \frac{\mathbf{w}_t \odot (\mathbf{1} + \mathbf{R}_{t+1})}{1 + \mathbf{w}_t^\top \mathbf{R}_{t+1}}$ before observing the subsequent state $\mathbf{s}_{t+1}$. This strictly causal forward-step timeline guarantees zero look-ahead bias.
+
+\subsection{State Space Representation}
+To provide the agent with a holistic view of asset momentum, market risk, and portfolio inertia, the state vector $\mathbf{s}_t \in \mathbb{R}^{19}$ is formulated as the concatenation of five distinct sub-vectors:
+\begin{equation}
+    \mathbf{s}_t = \big[ \mathbf{r}_t, \; \boldsymbol{\sigma}_t, \; \mathbf{z}_t, \; \mathbf{w}_t^{\text{drift}}, \; c_t \big]^\top
+\end{equation}
+where:
+\begin{enumerate}
+    \item $\mathbf{r}_t = [r_{1,t}, \dots, r_{N,t}]^\top \in \mathbb{R}^N$: The 1-day percentage returns of the $N$ constituent assets.
+    \item $\boldsymbol{\sigma}_t = [\sigma_{1,t}, \dots, \sigma_{N,t}]^\top \in \mathbb{R}^N$: The 20-day annualized rolling volatility for each asset, capturing localized price instability.
+    \item $\mathbf{z}_t \in \{0, 1\}^3$: A one-hot encoded vector representing the current macroeconomic regime:
+    \begin{equation}
+        \mathbf{z}_t = 
+        \begin{cases}
+            [1, 0, 0]^\top, & \text{if Regime}_t = \text{BULL} \\
+            [0, 1, 0]^\top, & \text{if Regime}_t = \text{BEAR} \\
+            [0, 0, 1]^\top, & \text{if Regime}_t = \text{HIGH\_VOLATILITY}
+        \end{cases}
+    \end{equation}
+    \item $\mathbf{w}_t^{\text{drift}} \in \Delta^N$: The current drifted asset weights prior to rebalancing at time $t$.
+    \item $c_t \in [0, 1]$: The current portfolio unallocated cash ratio ($c_t = 0$ in fully invested settings).
+\end{enumerate}
+For $N = 5$ assets, the dimension is $5 + 5 + 3 + 5 + 1 = 19$. In the ablation setting without regime conditioning, $\mathbf{z}_t$ is omitted, yielding $D = 16$.
+
+\subsection{Continuous Action Space and Simplex Mapping}
+In long-only portfolio management without leverage, the target capital allocation $\mathbf{w}_t = [w_{1,t}, \dots, w_{N,t}]^\top$ must reside on the standard $N$-dimensional probability simplex:
+\begin{equation}
+    \Delta^N = \left\{ \mathbf{w}_t \in \mathbb{R}^N \; \middle| \; \sum_{i=1}^N w_{i,t} = 1.0, \quad w_{i,t} \ge 0, \; \forall i \right\}
+\end{equation}
+The policy network outputs an unconstrained continuous action vector $\mathbf{a}_t \in [-5.0, 5.0]^N$. To guarantee that the generated portfolio weights strictly satisfy the budget and non-negativity constraints without numerical instability, we apply a numerically stabilized Softmax transformation:
+\begin{equation}
+    w_{i,t} = \frac{\exp(a_{i,t} - \max_k a_{k,t})}{\sum_{j=1}^N \exp(a_{j,t} - \max_k a_{k,t})}
+\end{equation}
+
+\subsection{Portfolio Drift and Turnover Dynamics}
+Between rebalancing intervals $t-1$ and $t$, asset prices evolve according to daily price relative vector $\mathbf{y}_t = [y_{1,t}, \dots, y_{N,t}]^\top$, where $y_{i,t} = P_{i,t} / P_{i,t-1} = 1 + r_{i,t}$. Consequently, the portfolio allocation naturally drifts due to differential asset performance. The drifted weight of asset $i$ immediately before executing action $\mathbf{a}_t$ is:
+\begin{equation}
+    w_{i,t}^{\text{drift}} = \frac{w_{i,t-1} (1 + r_{i,t})}{\sum_{j=1}^N w_{j,t-1} (1 + r_{j,t})}
+\end{equation}
+The portfolio rebalancing turnover $\tau_t$ is defined as the total $L_1$-norm distance between the target rebalancing weights $\mathbf{w}_t$ and the pre-rebalancing drifted weights $\mathbf{w}_t^{\text{drift}}$:
+\begin{equation}
+    \tau_t = \sum_{i=1}^N \big| w_{i,t} - w_{i,t}^{\text{drift}} \big|
+\end{equation}
+Executing this reallocation incurs transaction fees and bid-ask slippage. Modeling an institutional transaction cost rate $c_{\text{fee}} = 0.0010$ (10 basis points), the total friction cost incurred is:
+\begin{equation}
+    C_t = c_{\text{fee}} \cdot \tau_t
+\end{equation}
+
+\subsection{Multi-Objective Penalized Reward Function}
+Standard DRL formulations that maximize gross cumulative return $\sum_t r_t$ inevitably lead to hyperactive trading policies with unacceptable volatility and capital destruction from transaction fees. To enforce disciplined asset allocation, we formulate a multi-objective reward function balancing net financial return, localized covariance risk, and excessive portfolio turnover:
+\begin{equation}
+    R_t = 100 \cdot r_{\text{net}, t} - \lambda_{\text{risk}} \cdot 1000 \cdot \sigma_{\text{port}, t}^2 - \lambda_{\text{cost}} \cdot \tau_t
+\end{equation}
+where:
+\begin{itemize}
+    \item $r_{\text{net}, t} = \sum_{i=1}^N w_{i,t} r_{i,t} - C_t$ is the gross portfolio return net of transaction fees.
+    \item $\sigma_{\text{port}, t}^2 = \mathbf{w}_t^\top \boldsymbol{\Sigma}_t \mathbf{w}_t$ is the estimated portfolio variance computed over a rolling lookback window of $K = 20$ trading days, where $\boldsymbol{\Sigma}_t = \text{Cov}(\mathbf{R}_{t-K:t})$.
+    \item $\lambda_{\text{risk}} = 1.0$ is the risk-aversion hyperparameter penalizing allocation into volatile or co-dependent assets.
+    \item $\lambda_{\text{cost}} = 0.5$ is the transaction cost dampener penalizing unneeded portfolio turnover.
+    \item Scaling constants ($100$ and $1000$) normalize gradient magnitudes across return percentages and variance magnitudes for stable gradient descent.
+\end{itemize}
+
+\subsection{Market Regime Detection Framework}
+To condition the policy on macro-structural trends without introducing future look-ahead bias, we design a three-state deterministic classification algorithm. Let $\bar{M}_{t, 20}$ denote the cross-sectional mean 20-day momentum of the asset universe, $\bar{S}_{t, 50}$ denote the cross-sectional mean price-to-50-day Simple Moving Average (SMA) ratio, and $\bar{\sigma}_{t, 20}$ denote the average 20-day annualized rolling volatility across all assets.
+
+The regime state $Z_t \in \{\text{BULL}, \text{BEAR}, \text{HIGH\_VOLATILITY}\}$ is classified chronologically via the following priority rules:
+\begin{enumerate}
+    \item \textbf{High Volatility Priority State:}
+    \begin{equation}
+        \text{If } \bar{\sigma}_{t, 20} \ge Q_{0.75}(\bar{\sigma}_{\le t, 20}) \implies Z_t = \text{HIGH\_VOLATILITY}
+    \end{equation}
+    where $Q_{0.75}(\bar{\sigma}_{\le t, 20})$ is the causal expanding 75th percentile historical volatility threshold:
+    \begin{equation}
+        Q_{0.75}(\bar{\sigma}_{\le t, 20}) = \text{Quantile}_{0.75}\left( \{\bar{\sigma}_{\tau, 20}\}_{\tau=1}^t \right), \quad t \ge 60
+    \end{equation}
+    By strictly computing the volatility threshold using only historical information available up to day $t$ (with a 60-day warm-up window), this formulation guarantees zero future information leakage into past regime classifications.
+    \item \textbf{Bull Market State:}
+    \begin{equation}
+        \text{Else if } \bar{M}_{t, 20} > 0 \quad \text{and} \quad \bar{S}_{t, 50} > 1.0 \implies Z_t = \text{BULL}
+    \end{equation}
+    \item \textbf{Bear Market State:}
+    \begin{equation}
+        \text{Else if } \bar{M}_{t, 20} < 0 \quad \text{and} \quad \bar{S}_{t, 50} < 1.0 \implies Z_t = \text{BEAR}
+    \end{equation}
+    \item \textbf{Boundary Fallback:} Otherwise, $Z_t = \text{BULL}$ if $\bar{M}_{t, 20} \ge 0$, else $\text{BEAR}$.
+\end{enumerate}
+
+The regime-distribution counts in the previous draft were generated from an earlier dataset version and are omitted here. The regime distribution plot should be regenerated from the current 2026 data before including numerical regime-frequency claims.
+
+\subsection{Proximal Policy Optimization (PPO)}
+To train the allocation agent, we utilize Proximal Policy Optimization (PPO) \cite{schulman2017proximal}, an actor-critic algorithm that ensures stable policy updates by constraining policy drift via a clipped surrogate objective. 
+
+Let $\pi_\theta(\mathbf{a}_t|\mathbf{s}_t)$ parameterize the policy with network parameters $\theta$, and let $r_t(\theta)$ denote the probability ratio between the current and previous policy:
+\begin{equation}
+    r_t(\theta) = \frac{\pi_\theta(\mathbf{a}_t | \mathbf{s}_t)}{\pi_{\theta_{\text{old}}}(\mathbf{a}_t | \mathbf{s}_t)}
+\end{equation}
+The clipped surrogate objective function is expressed as:
+\begin{equation}
+    L^{\text{CLIP}}(\theta) = \hat{\mathbb{E}}_t \left[ \min\left( r_t(\theta)\hat{A}_t, \; \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t \right) \right]
+\end{equation}
+where $\epsilon = 0.2$ is the clipping parameter and $\hat{A}_t$ is the Generalized Advantage Estimator (GAE) \cite{schulman2015high}:
+\begin{equation}
+    \hat{A}_t = \sum_{l=0}^{\infty} (\gamma \lambda)^l \delta_{t+l}^V
+\end{equation}
+with temporal difference residual $\delta_t^V = R_t + \gamma V_\phi(\mathbf{s}_{t+1}) - V_\phi(\mathbf{s}_t)$, discount factor $\gamma = 0.99$, and GAE factor $\lambda = 0.95$. The joint optimization objective incorporates the clipped policy loss, a mean-squared error value function loss $L^{VF}(\phi)$, and an entropy bonus $S[\pi_\theta]$ to encourage exploration:
+\begin{equation}
+    L(\theta, \phi) = -\hat{\mathbb{E}}_t \left[ L^{\text{CLIP}}(\theta) - c_1 \big( V_\phi(\mathbf{s}_t) - V_t^{\text{targ}} \big)^2 + c_2 S[\pi_\theta](\mathbf{s}_t) \right]
+\end{equation}
+where coefficients are set to $c_1 = 0.5$ and $c_2 = 0.01$.
+
+\subsection{Portfolio Weight Constraints}
+The portfolio allocation is represented as a long-only weight vector on the probability simplex. The policy action is converted to normalized weights using a Softmax mapping, ensuring non-negative allocations that sum to one. The current backtest results should not be interpreted as demonstrating compliance with a separate 35\% per-asset concentration cap; that constraint requires independent code-level verification and dedicated tests before it can be claimed.
+
+\section{Experimental Setup}
+
+\subsection{Dataset and Preprocessing} The asset universe comprises five large-cap U.S. equities: Apple (AAPL), Microsoft (MSFT), Alphabet (GOOGL), Amazon (AMZN), and NVIDIA (NVDA). The project data files report 2,741 daily price observations spanning January 4, 2016 to November 25, 2026. The aligned feature and regime files each contain 2,542 observations beginning October 17, 2016 and ending November 25, 2026. Prices are sourced through the project's Yahoo Finance data-collection pipeline. The backtest uses the processed price, feature, and regime datasets generated by the project. Data adjustment and missing-value handling follow the preprocessing pipeline; a full audit of corporate-action adjustment and imputation choices remains necessary before publication.
+
+\subsection{Chronological Dataset Splitting} The latest evaluation run uses a chronological out-of-sample test slice beginning January 2, 2024 and ending November 25, 2026. This slice contains 729 daily observations. The previously documented training and validation boundaries are retained in the project notes, but the training-data cutoff, model-selection process, and possible preprocessing leakage have not been independently re-audited as part of this paper update. Accordingly, the results are described as the project's current out-of-sample backtest and are not presented as a definitive leakage-free validation.
+
+\subsection{Benchmark Strategies} Five allocation strategies are compared on the same out-of-sample date index:
+\begin{enumerate}
+    \item \textbf{Equal Weight ($1/N$):} Equal target weights across the five assets with daily rebalancing.
+    \item \textbf{Buy and Hold:} Initial equal allocation followed by natural weight drift without subsequent rebalancing. The backtest charges the initial portfolio-establishment cost.
+    \item \textbf{Markowitz Mean-Variance Optimization (MVO):} Rolling optimization using a 60-return lookback and 21-observation rebalance interval. Historical prices preceding the test start are supplied as warm-up context so that the optimizer can form its initial lookback rather than beginning with an empty test-only history. The optimizer's exact objective and constraints should be checked against its implementation before publication.
+    \item \textbf{PPO (No Regime):} The saved PPO model evaluated without regime inputs.
+    \item \textbf{Regime-Aware PPO:} The saved PPO model evaluated with regime features.
+\end{enumerate}
+Both PPO models are loaded from saved model artifacts for this evaluation; the evaluation script does not retrain them during the reported run. Exact training cutoffs, reward coefficients, observation composition, and model-selection settings in the methodology section should be cross-checked against the code and training logs before formal submission.
+
+\subsection{Hyperparameter Configuration}
+Both PPO models were implemented using Stable-Baselines3 and PyTorch. The policy and value networks employ a Multi-Layer Perceptron (MLP) architecture featuring two fully-connected hidden layers with 64 units each and $\tanh$ activation functions. Detailed hyperparameters are summarized in Table \ref{tab:hyperparams}.
+
+\begin{table}[htbp]
+\caption{PPO Agent Architecture and Training Hyperparameters}
+\label{tab:hyperparams}
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Hyperparameter} & \textbf{Configured Value} \\
+\midrule
+Policy Architecture & MlpPolicy ($2 \times 64$ hidden units) \\
+Activation Function & Tanh \\
+Optimizer & Adam \\
+Learning Rate ($\alpha$) & $3.0 \times 10^{-4}$ \\
+Discount Factor ($\gamma$) & 0.99 \\
+GAE Parameter ($\lambda$) & 0.95 \\
+Clipping Parameter ($\epsilon$) & 0.20 \\
+Entropy Coefficient ($c_2$) & 0.01 \\
+Value Function Coefficient ($c_1$) & 0.50 \\
+Batch Size & 64 \\
+Rollout Horizon ($n_{\text{steps}}$) & 256 \\
+Optimization Epochs ($n_{\text{epochs}}$) & 10 \\
+Total Training Timesteps & 30,000 \\
+Transaction Cost Rate ($c_{\text{fee}}$) & 10 bps ($0.0010$) \\
+Action Constraint & Long-only simplex (Softmax) \\
+Initial Virtual Portfolio Capital & INR 1,000,000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Performance Evaluation Metrics}
+Model evaluation is conducted across eight standard quantitative finance metrics:
+\begin{enumerate}
+    \item \textbf{Cumulative Return (CR):} Total percentage capital growth over the 729-observation test period:
+    \begin{equation}
+        \text{CR} = \frac{V_T - V_0}{V_0} \times 100\%
+    \end{equation}
+    \item \textbf{Compound Annual Growth Rate (CAGR):}
+    \begin{equation}
+        \text{CAGR} = \left(\frac{V_T}{V_0}\right)^{\frac{252}{T}} - 1
+    \end{equation}
+    \item \textbf{Annualized Volatility ($\sigma_{\text{ann}}$):} Standard deviation of daily portfolio returns scaled to annual frequency:
+    \begin{equation}
+        \sigma_{\text{ann}} = \sqrt{252} \times \sqrt{\frac{1}{T-1} \sum_{t=1}^T (r_{\text{net}, t} - \bar{r})^2}
+    \end{equation}
+    \item \textbf{Sharpe Ratio (SR):} Risk-adjusted excess return per unit of total risk (assuming annual risk-free-rate setting used by the evaluation engine):
+    \begin{equation}
+        \text{SR} = \frac{\sqrt{252} \cdot \bar{r}_{\text{net}}}{\sigma_{\text{ann}}}
+    \end{equation}
+    \item \textbf{Maximum Drawdown (MDD):} Peak-to-trough decline in portfolio equity:
+    \begin{equation}
+        \text{MDD} = \max_{t \in [1, T]} \left( \frac{\max_{s \le t} V_s - V_t}{\max_{s \le t} V_s} \right) \times 100\%
+    \end{equation}
+    \item \textbf{Calmar Ratio:} Ratio of CAGR to Maximum Drawdown:
+    \begin{equation}
+        \text{Calmar} = \frac{\text{CAGR}}{\text{MDD}}
+    \end{equation}
+    \item \textbf{Total Turnover:} Cumulative portfolio reallocation volume:
+    \begin{equation}
+        \text{Turnover} = \sum_{t=1}^T \tau_t
+    \end{equation}
+    \item \textbf{Total Incurred Transaction Costs:} Cumulative friction in local currency (INR) given initial capital $V_0 = \text{INR } 1,000,000$:
+    \begin{equation}
+        \text{Cost} = \sum_{t=1}^T c_{\text{fee}} \cdot V_{t-1} \cdot \tau_t
+    \end{equation}
+\end{enumerate}
+
+\subsection{Backtesting Implementation}
+The evaluation uses the project's Python backtesting engine to simulate chronological portfolio values, allocation drift, turnover, and transaction costs. This engine applies the configured transaction-cost rate and records portfolio history and performance metrics. The current results are software-simulated and do not include brokerage routing, order-book execution, bid--ask spread modeling, market impact, taxes, latency, or live execution; no live-trading deployability is claimed.
+
+\section{Empirical Results and Discussion}
+
+\subsection{Benchmark Performance Comparison}
+All strategies were evaluated over the same out-of-sample date interval, January 2, 2024 to November 25, 2026, containing 729 observations. Initial capital was INR 1,000,000 and the configured transaction-cost rate was 0.10\% (10 basis points). Table \ref{tab:results} reports the generated evaluation metrics.
+
+\begin{table*}[t]
+\caption{Out-of-Sample Performance Comparison (2024-01-02 to 2026-11-25; 729 observations)}
+\label{tab:results}
+\centering
+\begin{tabular}{lcccccccc}
+\toprule
+\textbf{Strategy} & \textbf{Cum. Return} & \textbf{CAGR} & \textbf{Sharpe} & \textbf{Ann. Vol.} & \textbf{Max DD} & \textbf{Calmar} & \textbf{Turnover} & \textbf{Costs (INR)} \\
+ & \textbf{(\%)} & \textbf{(\%)} & & \textbf{(\%)} & \textbf{(\%)} & & & \\
+\midrule
+Equal Weight & 109.36 & 29.14 & 1.077 & 24.72 & 26.48 & 1.101 & 8.887 & 14,638.91 \\
+Buy \& Hold & 100.53 & 27.23 & 0.933 & 27.78 & 28.69 & 0.949 & 1.000 & 1,000.00 \\
+Markowitz MVO & \textbf{151.07} & \textbf{37.53} & \textbf{1.300} & 25.45 & 29.86 & 1.257 & 23.233 & 42,925.58 \\
+PPO (No Regime) & 97.94 & 26.66 & 1.067 & \textbf{22.68} & 26.88 & 0.992 & 12.332 & 18,362.50 \\
+Regime-Aware PPO & 105.01 & 28.21 & 1.070 & 24.05 & \textbf{26.43} & 1.067 & 49.101 & 82,963.42 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+The Markowitz strategy produced the highest cumulative return, CAGR, and Sharpe ratio in this run. The Regime-Aware PPO achieved the lowest maximum drawdown among the five strategies, although the difference from PPO without regime inputs was small. PPO without regime inputs had the lowest annualized volatility. These rankings describe this test interval only; no statistical significance tests or confidence intervals were computed.
+
+\subsection{Ablation Study and Empirical Analysis}
+Comparing the two saved PPO agents provides a descriptive ablation of regime conditioning. Regime-Aware PPO recorded a CAGR of 28.21\%, compared with 26.66\% for PPO without regime inputs, an absolute difference of 1.58 percentage points. Maximum drawdown was 26.43\% for the regime-aware model and 26.88\% for the ablation, a difference of 0.45 percentage points. Their Sharpe ratios were very similar (1.070 and 1.067, respectively). Thus, the current results show modest improvements in return and drawdown metrics, but do not establish a substantial improvement in risk-adjusted performance.
+
+The regime-aware policy also traded more frequently in the evaluation. Its cumulative turnover was 49.101 compared with 12.332 for PPO without regime features. This corresponds to transaction costs of INR 82,963.42 versus INR 18,362.50 under the same 10-basis-point cost assumption. The higher trading activity is an important trade-off and cautions against interpreting the modest return improvement as an unqualified benefit.
+
+The comparison is limited to one historical test window and one saved model per configuration. Multiple random seeds, confidence intervals, formal statistical tests, and parameter sensitivity experiments have not been reported. The test therefore provides exploratory empirical evidence, not a statistically conclusive ablation.
+
+\subsection{Comparison with Classical Quantitative Benchmarks}
+Equal Weight achieved a CAGR of 29.14\% and Sharpe ratio of 1.077, making it a competitive simple baseline. Buy \& Hold recorded 27.23\% CAGR with lower turnover and the lowest transaction costs (INR 1,000), reflecting the initial allocation cost and no subsequent rebalancing. Markowitz MVO performed best on CAGR (37.53\%) and Sharpe ratio (1.300) in this run, while its maximum drawdown (29.86\%) was higher than the PPO variants and Equal Weight. The MVO result is sensitive to the optimizer's estimates and settings; its performance should be tested with alternate lookbacks, rebalance intervals, and robust estimation before drawing general conclusions.
+
+The results do not show that PPO consistently dominates classical methods. Rather, they indicate that the tested PPO policies were competitive with simple baselines on some risk metrics but did not exceed Markowitz MVO on return or Sharpe during the selected period.
+
+\subsection{Transaction Cost and Turnover Analysis}
+Transaction costs materially distinguish the two PPO configurations. Regime-Aware PPO accumulated turnover of 49.101 and INR 82,963.42 in costs, whereas PPO without regime inputs accumulated turnover of 12.332 and INR 18,362.50. Equal Weight incurred INR 14,638.91, Markowitz MVO INR 42,925.58, and Buy \& Hold INR 1,000. The high cost burden of Regime-Aware PPO is consistent with its greater allocation changes in this simulation. Although the environment/reward design includes turnover-related penalties, the resulting saved policy still exhibits high turnover in the evaluation. This motivates further tuning and explicit cost sensitivity analysis. Transaction costs are modeled at 10 bps; spread, market impact, taxes, and execution slippage are not separately included.
+
+\section{Conclusion and Future Work}
+This paper presents an implemented portfolio allocation workflow combining PPO-based continuous allocation policies and market-regime features, and evaluates it against Equal Weight, Buy \& Hold, and rolling Markowitz MVO using a chronological historical test slice. The latest run evaluates 729 observations from January 2, 2024 to November 25, 2026, using five U.S. equities, INR 1,000,000 initial capital, and a 10-basis-point transaction-cost setting.
+
+Markowitz MVO achieved the strongest observed return and Sharpe results (151.07\% cumulative return, 37.53\% CAGR, and 1.300 Sharpe). Regime-Aware PPO achieved a 28.21\% CAGR and the lowest maximum drawdown (26.43\%) in the strategy comparison. Relative to PPO without regime features, it showed a small CAGR improvement and a small drawdown improvement, but a materially higher turnover and transaction-cost burden. These results do not establish that regime conditioning is statistically superior or that either PPO policy is suitable for live investing.
+
+Several limitations remain. The study uses a narrow five-stock universe, a single reported test window, and saved PPO models; it does not report multi-seed robustness, significance tests, parameter sensitivity, or comprehensive market-impact and execution modeling. The training cutoff and complete leakage audit also require verification before the results are treated as publication-ready. Future work should address these limitations through repeated-seed experiments, walk-forward evaluation, broader asset universes, transaction-cost sensitivity analysis, alternative regime definitions, and robust portfolio optimization baselines.
+
+\section*{Acknowledgment}
+The authors express their deepest gratitude to their project supervisor, Ms. Vishakha Agarwal, Assistant Professor, Department of Computer Science and Engineering, School of Computer Science and Engineering (SCSE), IILM University, Greater Noida, for her invaluable mentorship, technical insights, and continuous guidance throughout the duration of this research. We also thank the SCSE faculty for providing the computing resources and academic environment to carry out this work.
+
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{00}
+
+\bibitem{markowitz1952portfolio}
+H.~Markowitz, ``Portfolio selection,'' \emph{The Journal of Finance}, vol.~7, no.~1, pp. 77--91, 1952.
+
+\bibitem{mandelbrot1963variation}
+B.~Mandelbrot, ``The variation of certain speculative prices,'' \emph{The Journal of Business}, vol.~36, no.~4, pp. 394--419, 1963.
+
+\bibitem{cont2001empirical}
+R.~Cont, ``Empirical properties of asset returns: Stylized facts and statistical issues,'' \emph{Quantitative Finance}, vol.~1, no.~2, pp. 223--236, 2001.
+
+\bibitem{michaud1989markowitz}
+R.~O. Michaud, ``The Markowitz optimization enigma: Is 'optimized' optimal?'' \emph{Financial Analysts Journal}, vol.~45, no.~1, pp. 31--42, 1989.
+
+\bibitem{sharpe1964capital}
+W.~F. Sharpe, ``Capital asset prices: A theory of market equilibrium under conditions of risk,'' \emph{The Journal of Finance}, vol.~19, no.~3, pp. 425--442, 1964.
+
+\bibitem{lintner1965valuation}
+J.~Lintner, ``The valuation of risk assets and the selection of risky investments in stock portfolios and capital budgets,'' \emph{The Review of Economics and Statistics}, vol.~47, no.~1, pp. 13--37, 1965.
+
+\bibitem{black1992global}
+F.~Black and R.~Litterman, ``Global portfolio optimization,'' \emph{Financial Analysts Journal}, vol.~48, no.~5, pp. 28--43, 1992.
+
+\bibitem{ledoit2004well}
+O.~Ledoit and M.~Wolf, ``A well-conditioned estimator for large-dimensional covariance matrices,'' \emph{Journal of Multivariate Analysis}, vol.~88, no.~2, pp. 365--411, 2004.
+
+\bibitem{demiguel2009optimal}
+V.~DeMiguel, L.~Garlappi, and R.~Uppal, ``Optimal versus naive diversification: How inefficient is the 1/N portfolio strategy?'' \emph{The Review of Financial Studies}, vol.~22, no.~5, pp. 1915--1953, 2009.
+
+\bibitem{moody2001learning}
+J.~Moody and M.~Saffell, ``Learning to trade via direct reinforcement,'' \emph{IEEE Transactions on Neural Networks}, vol.~12, no.~4, pp. 875--889, 2001.
+
+\bibitem{jiang2017deep}
+Z.~Jiang, D.~Xu, and J.~Liang, ``A deep reinforcement learning framework for the financial portfolio management problem,'' \emph{arXiv preprint arXiv:1706.10059}, 2017.
+
+\bibitem{liang2018adversarial}
+Z.~Liang, H.~Chen, J.~Zhu, K.~Jiang, and Y.~Li, ``Adversarial deep reinforcement learning in portfolio management,'' \emph{arXiv preprint arXiv:1808.09940}, 2018.
+
+\bibitem{ding2020deep}
+K.~Ding, Y.~Lv, and C.~Zheng, ``Deep reinforcement learning for portfolio management: A multi-agent approach,'' in \emph{Proceedings of the IEEE International Conference on Data Mining (ICDM)}, 2020, pp. 112--120.
+
+\bibitem{zhang2020deep}
+Z.~Zhang, S.~Zohren, and S.~Roberts, ``Deep reinforcement learning for trading,'' \emph{The Journal of Financial Data Science}, vol.~2, no.~2, pp. 25--40, 2020.
+
+\bibitem{hamilton1989new}
+J.~D. Hamilton, ``A new approach to the economic analysis of nonstationary time series and the business cycle,'' \emph{Econometrica}, vol.~57, no.~2, pp. 357--384, 1989.
+
+\bibitem{guidolin2011markov}
+M.~Guidolin, ``Markov switching models in empirical finance,'' in \emph{Missing Data Methods: Time-Series Methods and Applications}, Emerald Group Publishing Limited, 2011, pp. 1--86.
+
+\bibitem{ang2002regime}
+A.~Ang and G.~Bekaert, ``Regime switches in interest rates,'' \emph{Journal of Business \& Economic Statistics}, vol.~20, no.~2, pp. 163--182, 2002.
+
+\bibitem{kritzman2012regime}
+M.~Kritzman, S.~Page, and D.~Turkington, ``Regime shifts: Implications for asset allocation,'' \emph{Financial Analysts Journal}, vol.~68, no.~3, pp. 22--39, 2012.
+
+\bibitem{schulman2017proximal}
+J.~Schulman, F.~Wolski, P.~Dhariwal, A.~Radford, and O.~Klimov, ``Proximal policy optimization algorithms,'' \emph{arXiv preprint arXiv:1707.06347}, 2017.
+
+\bibitem{schulman2015high}
+J.~Schulman, P.~Moritz, S.~Levine, M.~Jordan, and P.~Abbeel, ``High-dimensional continuous control using generalized advantage estimation,'' \emph{arXiv preprint arXiv:1506.02438}, 2015.
+
+\end{thebibliography}
+
+\end{document}

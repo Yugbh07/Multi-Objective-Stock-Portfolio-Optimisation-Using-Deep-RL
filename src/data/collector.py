@@ -10,6 +10,7 @@ import logging
 from typing import List, Optional
 import pandas as pd
 import yfinance as yf
+from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -117,9 +118,109 @@ def download_market_data(
         fallback_df.to_csv(save_path)
         logger.info(f"Fallback dataset saved to {save_path}")
         return fallback_df
+    
+def fetch_latest_market_data(tickers: Optional[List[str]] = None) -> pd.DataFrame:
+    """
+    Fetch the latest available market data directly from Yahoo Finance.
+    Does not read from or overwrite the historical training CSV.
+    """
+    if tickers is None:
+        tickers = DEFAULT_TICKERS
+
+    logger.info(f"Fetching latest market data for {tickers}")
+
+    data = yf.download(
+        tickers=tickers,
+        period="1d",
+        interval="5m",
+        group_by="column",
+        auto_adjust=False,
+        progress=False,
+        threads=True
+    )
+
+    if data is None or data.empty:
+        raise RuntimeError("Yahoo Finance returned no latest market data.")
+
+    if isinstance(data.columns, pd.MultiIndex):
+        available_tickers = set(data.columns.get_level_values(1))
+    else:
+        available_tickers = set(tickers)
+
+    missing = set(tickers) - available_tickers
+
+    if missing:
+        raise RuntimeError(f"Missing market data for tickers: {sorted(missing)}")
+
+    close_data = data["Close"]
+    latest_data_timestamp = close_data.dropna(how="all").index[-1]
+
+    now_utc = pd.Timestamp.now(tz="UTC")
+    latest_timestamp = pd.Timestamp(latest_data_timestamp)
+ 
+    if latest_timestamp.tzinfo is None:
+       latest_timestamp = latest_timestamp.tz_localize("UTC")
+
+    data_age_minutes = (now_utc - latest_timestamp).total_seconds() / 60
+
+    logger.info(f"Latest market candle: {latest_timestamp}")
+    logger.info(f"Data age: {data_age_minutes:.2f} minutes")
+
+    if isinstance(close_data, pd.Series):
+        close_data = close_data.to_frame(name=tickers[0])
+
+    close_data = close_data.dropna(how="all")
+
+    if close_data.empty:
+        raise RuntimeError("No valid closing prices returned.")
+    # Validate intraday data freshness
+    latest_timestamp = pd.Timestamp(close_data.dropna(how="all").index[-1])
+
+    now_et = pd.Timestamp.now(tz="America/New_York")
+
+    if latest_timestamp.tzinfo is None:
+        latest_timestamp = latest_timestamp.tz_localize("America/New_York")
+    else:
+        latest_timestamp = latest_timestamp.tz_convert("America/New_York")
+
+    age_minutes = (now_et - latest_timestamp).total_seconds() / 60
+
+    logger.info(f"Latest candle timestamp (ET): {latest_timestamp}")
+    logger.info(f"Market data age: {age_minutes:.2f} minutes")
+
+    if age_minutes > 30:
+       raise RuntimeError(
+          f"Market data is stale ({age_minutes:.1f} minutes old). "
+          "Refusing to generate a recommendation."
+       )
+    
+
+    latest_prices = close_data.iloc[-1].dropna()
+
+    missing_prices = set(tickers) - set(latest_prices.index)
+
+    if missing_prices:
+        raise RuntimeError(f"Missing latest prices for: {sorted(missing_prices)}")
+
+    if (latest_prices <= 0).any():
+        raise RuntimeError("Invalid non-positive stock price detected.")
+
+    result = pd.DataFrame({
+        "Ticker": latest_prices.index,
+        "Price": latest_prices.values,
+        "Market_Data_Date": close_data.index[-1]
+    })
+
+    result["Fetched_At_UTC"] = datetime.now(timezone.utc).isoformat()
+    result["Data_Status"] = "LAST MARKET CLOSE"
+
+    logger.info("Latest prices successfully fetched and validated.")
+    return result    
 
 
 if __name__ == "__main__":
-    df = download_market_data(force_refresh=True)
-    print(df.head())
-    print("\nShape:", df.shape)
+    df = fetch_latest_market_data()
+
+    print("\nLatest Market Data:")
+    print(df.to_string(index=False))
+    print("\nFetched rows:", len(df))

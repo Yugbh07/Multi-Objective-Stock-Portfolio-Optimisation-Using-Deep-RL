@@ -16,7 +16,7 @@ from src.backtesting.engine import BacktestEngine
 from src.backtesting.simulator_bridge import VirtualTradingBridge
 
 st.set_page_config(
-    page_title="AI Multi-Objective Portfolio Optimizer",
+    page_title="Multi-Objective Portfolio Optimizer",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -45,8 +45,8 @@ regimes_df = pd.read_csv(REGIMES_PATH, index_col=0, parse_dates=True)
 results_df = pd.read_csv(EXP_RESULTS_PATH) if os.path.exists(EXP_RESULTS_PATH) else None
 
 # Header
-st.markdown('<div class="main-title">📈 AI-Driven Adaptive Portfolio Optimization</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">Multi-Objective Deep Reinforcement Learning (PPO) & Modern Portfolio Theory | IILM University Major Project</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title"> Multi-Objective Portfolio Optimization</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Multi-Objective Deep Reinforcement Learning (PPO) & Modern Portfolio Theory </div>', unsafe_allow_html=True)
 
 # Sidebar Controls
 st.sidebar.header("⚙️ Portfolio Configuration")
@@ -59,7 +59,7 @@ selected_assets = st.sidebar.multiselect("Asset Universe", all_tickers, default=
 
 # Model Settings
 st.sidebar.markdown("---")
-st.sidebar.subheader("🤖 RL Policy Controls")
+st.sidebar.subheader(" RL Policy Controls")
 use_regime = st.sidebar.checkbox("Enable Regime-Aware Policy", value=True)
 apply_risk_guardrails = st.sidebar.checkbox("Enforce 35% Asset Cap", value=True)
 
@@ -149,7 +149,7 @@ with tab_recom:
             "Weight (%)": "{:.2f}%",
             "Allocated Capital (INR)": "INR {:,.2f}"
         }), use_container_width=True)
-        st.info(f"💡 Strategy Insight: Under the current {latest_regime} condition, the PPO policy balances returns with risk penalties to preserve capital.")
+        st.info(f" Strategy Insight: Under the current {latest_regime} condition, the PPO policy balances returns with risk penalties to preserve capital.")
 
     with col_right:
         st.subheader("Optimal Capital Allocation Donut")
@@ -260,7 +260,7 @@ with tab_simulator:
                 "Position Value (USD)": "${:,.2f}"
             }), use_container_width=True)
 
-    with st.expander("🏗️ View System Architecture & IPC Protocol"):
+    with st.expander(" View System Architecture & IPC Protocol"):
         st.markdown("""
         ```
         ┌─────────────────────────┐          HTTP/REST IPC (Port 8088)          ┌─────────────────────────┐

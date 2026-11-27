@@ -1,153 +1,650 @@
 """
 Research Experiments & Performance Evaluation Generator
-Executes the three core research experiments defined in the project:
-1. Experiment 1: PPO vs Classical Benchmarks (Equal Weight, Buy & Hold, Markowitz MVO)
-2. Experiment 2: Ablation Study (PPO without regime vs Regime-Aware PPO)
-3. Experiment 3: Sensitivity Analysis (Risk aversion & transaction cost penalties)
-Saves results tables (Markdown/CSV) and publication-quality figures to data/research_results/.
+
+Evaluates portfolio strategies on a shared out-of-sample period:
+1. Equal Weight
+2. Buy & Hold
+3. Markowitz MVO
+4. PPO Without Regime
+5. Regime-Aware PPO
+
+Outputs:
+- Numeric CSV results
+- Markdown research report
+- Portfolio growth chart
+- Drawdown chart
+
+All strategies are evaluated over the same out-of-sample dates.
 """
 
 import os
 import sys
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Optional
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src.backtesting.engine import BacktestEngine
 from src.models.agent import PPOAgent
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
 logger = logging.getLogger(__name__)
 
 
-def run_research_experiments(
-    test_start_date: str = "2024-01-01",
-    output_dir: Optional[str] = None
-) -> pd.DataFrame:
-    if output_dir is None:
-        output_dir = os.path.join(PROJECT_ROOT, "data", "research_results")
-    os.makedirs(output_dir, exist_ok=True)
+INITIAL_CAPITAL = 1_000_000.0
+TRANSACTION_COST_RATE = 0.0010
+DEFAULT_TEST_START = "2024-01-01"
 
-    prices_all = pd.read_csv(os.path.join(PROJECT_ROOT, "data", "processed", "clean_prices.csv"), index_col=0, parse_dates=True)
-    features_all = pd.read_csv(os.path.join(PROJECT_ROOT, "data", "features", "portfolio_features.csv"), index_col=0, parse_dates=True)
-    regimes_all = pd.read_csv(os.path.join(PROJECT_ROOT, "data", "features", "market_regimes.csv"), index_col=0, parse_dates=True)
 
-    # Slice strictly for out-of-sample evaluation
-    test_prices = prices_all.loc[test_start_date:].copy()
-    test_features = features_all.loc[test_start_date:].copy()
-    test_regimes = regimes_all.loc[test_start_date:].copy()
+# ============================================================
+# DATA LOADING & VALIDATION
+# ============================================================
 
-    logger.info(f"Running Out-of-Sample evaluation from {test_prices.index.min().date()} to {test_prices.index.max().date()} ({len(test_prices)} trading days)...")
+def load_dataset(path: str, name: str) -> pd.DataFrame:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{name} file not found: {path}")
 
-    engine = BacktestEngine(test_prices, initial_capital=1_000_000.0, transaction_cost_rate=0.0010)
+    df = pd.read_csv(path, index_col=0, parse_dates=True)
+
+    if df.empty:
+        raise ValueError(f"{name} dataset is empty.")
+
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError(f"{name} must have a DatetimeIndex.")
+
+    if df.index.isna().any():
+        raise ValueError(f"{name} contains invalid dates.")
+
+    if df.index.has_duplicates:
+        raise ValueError(f"{name} contains duplicate dates.")
+
+    if not df.index.is_monotonic_increasing:
+        raise ValueError(f"{name} dates are not chronological.")
+
+    if df.columns.has_duplicates:
+        raise ValueError(f"{name} contains duplicate columns.")
+
+    if df.isna().any().any():
+        raise ValueError(f"{name} contains NaN values.")
+
+    numeric = df.select_dtypes(include=[np.number])
+
+    if numeric.empty:
+        raise ValueError(f"{name} has no numeric columns.")
+
+    if not np.isfinite(numeric.to_numpy()).all():
+        raise ValueError(f"{name} contains infinite values.")
+
+    logger.info(
+        "Loaded %s: %d rows, %d columns, %s to %s",
+        name,
+        len(df),
+        len(df.columns),
+        df.index.min().date(),
+        df.index.max().date()
+    )
+
+    return df
+
+
+def load_research_data():
+    prices = load_dataset(
+        os.path.join(
+            PROJECT_ROOT,
+            "data",
+            "processed",
+            "clean_prices.csv"
+        ),
+        "Prices"
+    )
+
+    features = load_dataset(
+        os.path.join(
+            PROJECT_ROOT,
+            "data",
+            "features",
+            "portfolio_features.csv"
+        ),
+        "Features"
+    )
+
+    regimes = load_dataset(
+        os.path.join(
+            PROJECT_ROOT,
+            "data",
+            "features",
+            "market_regimes.csv"
+        ),
+        "Regimes"
+    )
+
+    if not prices.select_dtypes(include=[np.number]).gt(0).all().all():
+        raise ValueError("Price dataset contains non-positive prices.")
+
+    if "regime_id" not in regimes.columns:
+        raise ValueError("Regime dataset missing regime_id column.")
+
+    tickers = list(prices.columns)
+
+    required_feature_columns = []
+
+    for ticker in tickers:
+        required_feature_columns.extend([
+            f"{ticker}_return",
+            f"{ticker}_vol_20"
+        ])
+
+    missing_features = [
+        col for col in required_feature_columns
+        if col not in features.columns
+    ]
+
+    if missing_features:
+        raise ValueError(
+            f"Missing required feature columns: {missing_features}"
+        )
+
+    # Align datasets on shared dates and shared assets.
+    common_dates = (
+        prices.index
+        .intersection(features.index)
+        .intersection(regimes.index)
+    )
+
+    if len(common_dates) == 0:
+        raise ValueError("No common dates across research datasets.")
+
+    prices = prices.loc[common_dates].copy()
+    features = features.loc[common_dates].copy()
+    regimes = regimes.loc[common_dates].copy()
+
+    if not prices.index.equals(features.index):
+        raise RuntimeError("Price-feature date alignment failed.")
+
+    if not prices.index.equals(regimes.index):
+        raise RuntimeError("Price-regime date alignment failed.")
+
+    return prices, features, regimes
+
+
+# ============================================================
+# STRATEGY EVALUATION
+# ============================================================
+
+def run_all_strategies(
+    prices: pd.DataFrame,
+    features: pd.DataFrame,
+    regimes: pd.DataFrame,
+    test_start_date: str
+):
+    test_start = pd.Timestamp(test_start_date)
+
+    test_mask = prices.index >= test_start
+
+    test_dates = prices.index[test_mask]
+
+    if len(test_dates) < 3:
+        raise ValueError(
+            f"Insufficient out-of-sample data from {test_start_date}."
+        )
+
+    test_prices = prices.loc[test_dates].copy()
+    test_features = features.loc[test_dates].copy()
+    test_regimes = regimes.loc[test_dates].copy()
+
+    logger.info(
+        "Out-of-sample period: %s to %s (%d observations)",
+        test_dates.min().date(),
+        test_dates.max().date(),
+        len(test_dates)
+    )
+
+    engine = BacktestEngine(
+        test_prices,
+        initial_capital=INITIAL_CAPITAL,
+        transaction_cost_rate=TRANSACTION_COST_RATE
+    )
 
     results = {}
 
-    # 1. Equal Weight
-    logger.info("Evaluating: Equal Weight...")
-    ew = engine.backtest_equal_weight()
-    results["Equal Weight"] = ew
+    # Equal Weight
+    logger.info("Running Equal Weight...")
+    results["Equal Weight"] = engine.backtest_equal_weight()
 
-    # 2. Buy & Hold
-    logger.info("Evaluating: Buy & Hold...")
-    bh = engine.backtest_buy_and_hold()
-    results["Buy & Hold"] = bh
+    # Buy & Hold
+    logger.info("Running Buy & Hold...")
+    results["Buy & Hold"] = engine.backtest_buy_and_hold()
 
-    # 3. Markowitz MVO
-    logger.info("Evaluating: Markowitz MVO...")
-    mvo = engine.backtest_markowitz(lookback_window=60, rebalance_interval=21)
-    results["Markowitz MVO"] = mvo
+        # Markowitz
+    logger.info("Running Markowitz MVO...")
+    results["Markowitz MVO"] = engine.backtest_markowitz(
+        lookback_window=60,
+        rebalance_interval=21,
+        warmup_prices=prices.loc[
+            prices.index < test_dates[0]
+        ]
+    )
 
-    # 4. PPO Without Regime (Ablation)
-    logger.info("Evaluating: PPO (No Regime - Ablation)...")
+    # PPO without regime
+    logger.info("Running PPO Without Regime...")
     agent_no_regime = PPOAgent(include_regime=False)
-    w_no_regime = agent_no_regime.generate_weights_for_dataset(test_prices, test_features, test_regimes)
-    ppo_no_regime = engine.run_strategy_weights(w_no_regime, strategy_name="PPO (No Regime)")
-    results["PPO (No Regime)"] = ppo_no_regime
 
-    # 5. Regime-Aware PPO
-    logger.info("Evaluating: Regime-Aware PPO...")
+    weights_no_regime = agent_no_regime.generate_weights_for_dataset(
+        test_prices,
+        test_features,
+        test_regimes
+    )
+
+    results["PPO (No Regime)"] = engine.run_strategy_weights(
+        weights_no_regime,
+        strategy_name="PPO (No Regime)"
+    )
+
+    # Regime-aware PPO
+    logger.info("Running Regime-Aware PPO...")
     agent_regime = PPOAgent(include_regime=True)
-    w_regime = agent_regime.generate_weights_for_dataset(test_prices, test_features, test_regimes)
-    ppo_regime = engine.run_strategy_weights(w_regime, strategy_name="Regime-Aware PPO")
-    results["Regime-Aware PPO"] = ppo_regime
 
-    # Compile Results Table
-    summary_rows = []
-    for name, res in results.items():
-        m = res["metrics"]
-        summary_rows.append({
+    weights_regime = agent_regime.generate_weights_for_dataset(
+        test_prices,
+        test_features,
+        test_regimes
+    )
+
+    results["Regime-Aware PPO"] = engine.run_strategy_weights(
+        weights_regime,
+        strategy_name="Regime-Aware PPO"
+    )
+
+    # Validate evaluation history date coverage.
+    for name, result in results.items():
+        history = result.get("history")
+
+        if history is None or history.empty:
+            raise ValueError(f"{name} returned empty backtest history.")
+
+        if "portfolio_value" not in history.columns:
+            raise ValueError(
+                f"{name} history missing portfolio_value."
+            )
+
+        if not np.isfinite(
+            history["portfolio_value"].to_numpy(dtype=float)
+        ).all():
+            raise ValueError(
+                f"{name} produced non-finite portfolio values."
+            )
+
+        logger.info(
+            "%s evaluated over %s to %s (%d rows)",
+            name,
+            history.index.min().date(),
+            history.index.max().date(),
+            len(history)
+        )
+
+    return results, test_prices
+
+
+# ============================================================
+# RESULTS TABLE
+# ============================================================
+
+def build_results_table(results: dict) -> pd.DataFrame:
+    rows = []
+
+    for name, result in results.items():
+        metrics = result["metrics"]
+
+        rows.append({
             "Strategy": name,
-            "Cumulative Return (%)": f"{m['cumulative_return']*100:.2f}%",
-            "CAGR (%)": f"{m['cagr']*100:.2f}%",
-            "Sharpe Ratio": f"{m['sharpe_ratio']:.2f}",
-            "Annual Volatility (%)": f"{m['annualized_volatility']*100:.2f}%",
-            "Max Drawdown (%)": f"{m['max_drawdown']*100:.2f}%",
-            "Calmar Ratio": f"{m['calmar_ratio']:.2f}",
-            "Total Turnover": f"{m['total_turnover']:.2f}",
-            "Transaction Costs (INR)": f"INR {m['total_transaction_costs']:,.2f}"
+            "Cumulative Return": metrics["cumulative_return"],
+            "CAGR": metrics["cagr"],
+            "Sharpe Ratio": metrics["sharpe_ratio"],
+            "Annualized Volatility": metrics["annualized_volatility"],
+            "Maximum Drawdown": metrics["max_drawdown"],
+            "Calmar Ratio": metrics["calmar_ratio"],
+            "Total Turnover": metrics["total_turnover"],
+            "Transaction Costs": metrics["total_transaction_costs"]
         })
 
-    summary_df = pd.DataFrame(summary_rows)
-    md_table = summary_df.to_markdown(index=False)
+    summary = pd.DataFrame(rows)
 
-    # Save to file
-    table_path = os.path.join(output_dir, "experiment_results_table.md")
-    with open(table_path, "w", encoding="utf-8") as f:
-        f.write("# Out-of-Sample Benchmark Evaluation (2024-2025)\n\n")
-        f.write(md_table)
-        f.write("\n\n### Key Research Takeaways:\n")
-        f.write("- **Regime-Awareness Advantage**: Incorporating market state conditioning (Bull / Bear / High Volatility) enables the PPO policy to dynamically adapt its risk aversion and dampens drawdowns.\n")
-        f.write("- **Transaction Cost Sensitivity**: Explicit turnover penalization in the multi-objective reward function keeps trading activity disciplined compared to unrestricted classical MVO rebalancing.\n")
+    numeric_columns = [
+        col for col in summary.columns
+        if col != "Strategy"
+    ]
 
-    summary_df.to_csv(os.path.join(output_dir, "experiment_results.csv"), index=False)
-    logger.info(f"Saved research results table to {table_path}")
+    summary[numeric_columns] = summary[numeric_columns].astype(float)
 
-    # Generate Performance Charts
-    plt.figure(figsize=(12, 6))
-    for name, res in results.items():
-        hist = res["history"]
-        plt.plot(hist.index, hist["portfolio_value"] / 1000.0, label=name, linewidth=2)
+    if not np.isfinite(
+        summary[numeric_columns].to_numpy()
+    ).all():
+        raise ValueError("Summary table contains non-finite metrics.")
 
-    plt.title("Out-of-Sample Portfolio Growth Comparison (Starting Capital: ₹10,00,000)", fontsize=13, fontweight="bold")
-    plt.xlabel("Date", fontsize=11)
-    plt.ylabel("Portfolio Value (₹ in Thousands)", fontsize=11)
-    plt.legend(fontsize=10)
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.tight_layout()
-    plot_path = os.path.join(output_dir, "cumulative_returns.png")
-    plt.savefig(plot_path, dpi=300)
-    plt.close()
-    logger.info(f"Saved cumulative return chart to {plot_path}")
+    return summary
 
-    # Generate Drawdown Chart
-    plt.figure(figsize=(12, 5))
-    for name, res in results.items():
-        v = res["history"]["portfolio_value"].values
-        peak = np.maximum.accumulate(v)
-        dd = (v - peak) / peak * 100.0
-        plt.plot(res["history"].index, dd, label=name, linewidth=1.8)
 
-    plt.title("Out-of-Sample Drawdown Curves (%)", fontsize=13, fontweight="bold")
-    plt.xlabel("Date", fontsize=11)
-    plt.ylabel("Drawdown (%)", fontsize=11)
-    plt.legend(fontsize=10)
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.tight_layout()
-    dd_plot_path = os.path.join(output_dir, "drawdowns.png")
-    plt.savefig(dd_plot_path, dpi=300)
-    plt.close()
-    logger.info(f"Saved drawdown chart to {dd_plot_path}")
+# ============================================================
+# RESEARCH TAKEAWAYS
+# ============================================================
 
-    return summary_df
+def generate_takeaways(summary: pd.DataFrame) -> list:
+    takeaways = []
+
+    best_sharpe = summary.loc[
+        summary["Sharpe Ratio"].idxmax()
+    ]
+
+    best_cagr = summary.loc[
+        summary["CAGR"].idxmax()
+    ]
+
+    lowest_drawdown = summary.loc[
+        summary["Maximum Drawdown"].idxmin()
+    ]
+
+    lowest_volatility = summary.loc[
+        summary["Annualized Volatility"].idxmin()
+    ]
+
+    takeaways.append(
+        f"Highest Sharpe Ratio: {best_sharpe['Strategy']} "
+        f"({best_sharpe['Sharpe Ratio']:.3f})."
+    )
+
+    takeaways.append(
+        f"Highest CAGR: {best_cagr['Strategy']} "
+        f"({best_cagr['CAGR']:.2%})."
+    )
+
+    takeaways.append(
+        f"Lowest maximum drawdown: {lowest_drawdown['Strategy']} "
+        f"({lowest_drawdown['Maximum Drawdown']:.2%})."
+    )
+
+    takeaways.append(
+        f"Lowest annualized volatility: {lowest_volatility['Strategy']} "
+        f"({lowest_volatility['Annualized Volatility']:.2%})."
+    )
+
+    ppo_row = summary[
+        summary["Strategy"] == "Regime-Aware PPO"
+    ]
+
+    no_regime_row = summary[
+        summary["Strategy"] == "PPO (No Regime)"
+    ]
+
+    if not ppo_row.empty and not no_regime_row.empty:
+        ppo = ppo_row.iloc[0]
+        no_regime = no_regime_row.iloc[0]
+
+        sharpe_difference = (
+            ppo["Sharpe Ratio"]
+            - no_regime["Sharpe Ratio"]
+        )
+
+        drawdown_difference = (
+            ppo["Maximum Drawdown"]
+            - no_regime["Maximum Drawdown"]
+        )
+
+        takeaways.append(
+            "Regime-aware PPO vs PPO without regime: "
+            f"Sharpe difference = {sharpe_difference:+.3f}; "
+            f"maximum drawdown difference = {drawdown_difference:+.2%}."
+        )
+
+    takeaways.append(
+        "These are historical out-of-sample observations and do not "
+        "establish statistical significance or guarantee future performance."
+    )
+
+    return takeaways
+
+
+# ============================================================
+# CHARTS
+# ============================================================
+
+def plot_portfolio_growth(results: dict, output_dir: str):
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    for name, result in results.items():
+        history = result["history"]
+
+        ax.plot(
+            history.index,
+            history["portfolio_value"],
+            label=name,
+            linewidth=1.8
+        )
+
+    ax.set_title("Out-of-Sample Portfolio Growth")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Portfolio Value (INR)")
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.5)
+
+    fig.tight_layout()
+
+    path = os.path.join(output_dir, "cumulative_returns.png")
+
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info("Saved growth chart: %s", path)
+
+
+def plot_drawdowns(results: dict, output_dir: str):
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    for name, result in results.items():
+        history = result["history"]
+
+        values = history["portfolio_value"].astype(float)
+
+        peaks = values.cummax()
+
+        drawdowns = (values / peaks - 1.0) * 100.0
+
+        ax.plot(
+            history.index,
+            drawdowns,
+            label=name,
+            linewidth=1.7
+        )
+
+    ax.set_title("Out-of-Sample Drawdown Comparison")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Drawdown (%)")
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.5)
+
+    fig.tight_layout()
+
+    path = os.path.join(output_dir, "drawdowns.png")
+
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info("Saved drawdown chart: %s", path)
+
+
+# ============================================================
+# REPORT GENERATION
+# ============================================================
+
+def save_research_report(
+    summary: pd.DataFrame,
+    test_start: pd.Timestamp,
+    test_end: pd.Timestamp,
+    output_dir: str
+):
+    csv_path = os.path.join(
+        output_dir,
+        "experiment_results.csv"
+    )
+
+    md_path = os.path.join(
+        output_dir,
+        "experiment_results_table.md"
+    )
+
+    summary.to_csv(csv_path, index=False)
+
+    display_table = summary.copy()
+
+    percentage_columns = [
+        "Cumulative Return",
+        "CAGR",
+        "Annualized Volatility",
+        "Maximum Drawdown"
+    ]
+
+    for col in percentage_columns:
+        display_table[col] = display_table[col].map(
+            lambda x: f"{x:.2%}"
+        )
+
+    for col in [
+        "Sharpe Ratio",
+        "Calmar Ratio",
+        "Total Turnover"
+    ]:
+        display_table[col] = display_table[col].map(
+            lambda x: f"{x:.3f}"
+        )
+
+    display_table["Transaction Costs"] = (
+        display_table["Transaction Costs"]
+        .map(lambda x: f"INR {x:,.2f}")
+    )
+
+    takeaways = generate_takeaways(summary)
+
+    with open(md_path, "w", encoding="utf-8") as file:
+        file.write("# Out-of-Sample Portfolio Evaluation\n\n")
+
+        file.write(
+            f"**Evaluation period:** {test_start.date()} to "
+            f"{test_end.date()}\n\n"
+        )
+
+        file.write(
+            f"**Initial capital:** INR {INITIAL_CAPITAL:,.2f}\n\n"
+        )
+
+        file.write(
+            f"**Transaction cost rate:** "
+            f"{TRANSACTION_COST_RATE:.4%}\n\n"
+        )
+
+        file.write("## Performance Comparison\n\n")
+
+        file.write(display_table.to_markdown(index=False))
+
+        file.write("\n\n## Data-Driven Findings\n\n")
+
+        for takeaway in takeaways:
+            file.write(f"- {takeaway}\n")
+
+        file.write(
+            "\n\n## Methodological Limitations\n\n"
+            "- Historical performance does not guarantee future results.\n"
+            "- No statistical significance testing was conducted.\n"
+            "- No sensitivity analysis was conducted in this script.\n"
+            "- Results depend on the supplied data and trained models.\n"
+        )
+
+    logger.info("Saved CSV report: %s", csv_path)
+    logger.info("Saved Markdown report: %s", md_path)
+
+
+# ============================================================
+# MAIN PIPELINE
+# ============================================================
+
+def run_research_experiments(
+    test_start_date: str = DEFAULT_TEST_START,
+    output_dir: Optional[str] = None
+) -> pd.DataFrame:
+
+    if output_dir is None:
+        output_dir = os.path.join(
+            PROJECT_ROOT,
+            "data",
+            "research_results"
+        )
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    logger.info("Loading research datasets...")
+
+    prices, features, regimes = load_research_data()
+
+    logger.info("Evaluating strategies...")
+
+    results, test_prices = run_all_strategies(
+        prices,
+        features,
+        regimes,
+        test_start_date
+    )
+
+    summary = build_results_table(results)
+
+    actual_start = test_prices.index.min()
+    actual_end = test_prices.index.max()
+
+    save_research_report(
+        summary,
+        actual_start,
+        actual_end,
+        output_dir
+    )
+
+    plot_portfolio_growth(
+        results,
+        output_dir
+    )
+
+    plot_drawdowns(
+        results,
+        output_dir
+    )
+
+    logger.info(
+        "Research pipeline completed successfully. "
+        "Evaluation period: %s to %s",
+        actual_start.date(),
+        actual_end.date()
+    )
+
+    return summary
 
 
 if __name__ == "__main__":
-    df = run_research_experiments()
-    print("\n" + df.to_string(index=False))
+    results_df = run_research_experiments()
+
+    print("\n" + "=" * 80)
+    print("RESEARCH EVALUATION RESULTS")
+    print("=" * 80)
+
+    print(results_df.to_string(index=False))
+
+    print("\nResearch evaluation completed.")
